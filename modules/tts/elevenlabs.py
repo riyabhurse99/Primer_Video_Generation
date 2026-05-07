@@ -22,9 +22,9 @@ def _read_secret(key: str) -> str:
 
 class ElevenLabsTTS(BaseTTS):
 
-    def __init__(self):
-        self.api_key = _read_secret("ELEVENLABS_API_KEY")
-        self.voice_id = _read_secret("ELEVENLABS_VOICE_ID")
+    def __init__(self, api_key: str = None, voice_id: str = None):
+        self.api_key = api_key or _read_secret("ELEVENLABS_API_KEY")
+        self.voice_id = voice_id or _read_secret("ELEVENLABS_VOICE_ID")
 
         logger.info(f"ElevenLabsTTS init — api_key={'SET' if self.api_key else 'EMPTY'} voice_id={'SET:' + self.voice_id[:6] if self.voice_id else 'EMPTY'}")
 

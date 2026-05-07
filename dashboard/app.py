@@ -22,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-from config.settings import USE_MOCKS, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES, TTS_BACKEND
+from config.settings import USE_MOCKS, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES, TTS_BACKEND, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 
 
 def get_dependencies():
@@ -100,7 +100,10 @@ if page == "Generate Video":
             from modules.storage.local import LocalStorage
 
             slide_generator = GrootSlideGenerator(cookies=GROOT_COOKIES)
-            tts = ElevenLabsTTS()
+            tts = ElevenLabsTTS(
+                api_key=st.secrets.get("ELEVENLABS_API_KEY", "") or ELEVENLABS_API_KEY,
+                voice_id=st.secrets.get("ELEVENLABS_VOICE_ID", "") or ELEVENLABS_VOICE_ID,
+            )
             video_assembler = FFmpegVideoAssembler(temp_dir=TEMP_DIR)
             storage = LocalStorage(base_path=OUTPUT_DIR)
 
