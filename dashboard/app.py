@@ -100,10 +100,19 @@ if page == "Generate Video":
             from modules.storage.local import LocalStorage
 
             slide_generator = GrootSlideGenerator(cookies=GROOT_COOKIES)
+            # Debug: show what secrets are available
+            try:
+                secret_keys = list(st.secrets.keys()) if hasattr(st.secrets, 'keys') else "no keys() method"
+            except Exception as e:
+                secret_keys = f"error: {e}"
+            st.write(f"DEBUG secrets available: {secret_keys}")
+
             try:
                 el_api_key = st.secrets["ELEVENLABS_API_KEY"]
                 el_voice_id = st.secrets["ELEVENLABS_VOICE_ID"]
-            except Exception:
+                st.write(f"DEBUG: got keys from st.secrets — api_key={'SET' if el_api_key else 'EMPTY'}")
+            except Exception as e:
+                st.write(f"DEBUG: st.secrets failed — {e}")
                 el_api_key = ELEVENLABS_API_KEY
                 el_voice_id = ELEVENLABS_VOICE_ID
             tts = ElevenLabsTTS(api_key=el_api_key, voice_id=el_voice_id)
