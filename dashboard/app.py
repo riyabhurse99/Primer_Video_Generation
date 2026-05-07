@@ -100,10 +100,13 @@ if page == "Generate Video":
             from modules.storage.local import LocalStorage
 
             slide_generator = GrootSlideGenerator(cookies=GROOT_COOKIES)
-            tts = ElevenLabsTTS(
-                api_key=st.secrets.get("ELEVENLABS_API_KEY", "") or ELEVENLABS_API_KEY,
-                voice_id=st.secrets.get("ELEVENLABS_VOICE_ID", "") or ELEVENLABS_VOICE_ID,
-            )
+            try:
+                el_api_key = st.secrets["ELEVENLABS_API_KEY"]
+                el_voice_id = st.secrets["ELEVENLABS_VOICE_ID"]
+            except Exception:
+                el_api_key = ELEVENLABS_API_KEY
+                el_voice_id = ELEVENLABS_VOICE_ID
+            tts = ElevenLabsTTS(api_key=el_api_key, voice_id=el_voice_id)
             video_assembler = FFmpegVideoAssembler(temp_dir=TEMP_DIR)
             storage = LocalStorage(base_path=OUTPUT_DIR)
 
