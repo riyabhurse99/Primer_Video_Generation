@@ -26,6 +26,8 @@ class ElevenLabsTTS(BaseTTS):
         self.api_key = _read_secret("ELEVENLABS_API_KEY")
         self.voice_id = _read_secret("ELEVENLABS_VOICE_ID")
 
+        logger.info(f"ElevenLabsTTS init — api_key={'SET' if self.api_key else 'EMPTY'} voice_id={'SET:' + self.voice_id[:6] if self.voice_id else 'EMPTY'}")
+
         if not self.api_key:
             raise ValueError("ELEVENLABS_API_KEY is not set. Add it to .env or Streamlit secrets.")
         if not self.voice_id:
