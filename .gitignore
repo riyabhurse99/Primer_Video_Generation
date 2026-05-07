@@ -1,0 +1,26 @@
+# Environment — contains API keys, never commit
+.env
+.env.example
+
+# Generated output — large files, no need in repo
+output/
+temp/
+metrics.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
