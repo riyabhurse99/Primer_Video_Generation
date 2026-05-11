@@ -653,6 +653,8 @@ div[data-testid="stHorizontalBlock"]:has(button[data-testid="baseButton-secondar
     padding: 0 20px !important;
     height: 60px !important;
     margin-top: 4px !important;
+    white-space: nowrap !important;
+    min-width: max-content !important;
 }
 div[data-testid="stHorizontalBlock"]:has(button[data-testid="baseButton-secondary"]) .stButton > button:hover {
     background: transparent !important;
