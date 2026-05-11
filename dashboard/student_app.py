@@ -140,12 +140,6 @@ Generate ONE short, specific question to understand what this student already kn
 # ═══════════════════════════════════════════════════════════════════════════════
 # SESSION STATE
 # ═══════════════════════════════════════════════════════════════════════════════
-# Handle query-param nav (HTML anchor links set ?p=...)
-_qp_page = st.query_params.get("p", None)
-if _qp_page in ("dashboard", "generate", "library"):
-    st.session_state.page = _qp_page
-    st.query_params.clear()
-
 if "page" not in st.session_state:
     st.session_state.page = "dashboard"
 if "play_video" not in st.session_state:
@@ -202,55 +196,10 @@ html, body, [class*="css"] {
 [data-testid="stToolbar"] { display: none !important; }
 .block-container { padding-top: 0 !important; max-width: 100% !important; }
 
-/* ── Nav bar wrapper ── */
-.s-nav-bar {
-    background: var(--navy);
-    height: 60px;
-    display: flex;
-    align-items: center;
-    padding: 0 32px;
-    margin: -1rem -1rem 0 -1rem;
-    border-bottom: 4px solid var(--blue);
-    position: relative;
-    z-index: 100;
-    gap: 8px;
-}
+/* ── Nav logo (inside first stColumn of nav row) ── */
 .s-nav-logo {
     height: 28px;
-    margin-right: 24px;
     filter: brightness(0) invert(1);
-}
-.s-nav-spacer { flex: 1; }
-.s-nav-user {
-    background: rgba(255,255,255,0.1);
-    color: white;
-    padding: 6px 14px;
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    margin-left: 8px;
-    border: 1px solid rgba(255,255,255,0.2);
-}
-
-/* ── Nav links (HTML anchors inside s-nav-bar) ── */
-.s-nav-link {
-    color: rgba(255,255,255,0.65);
-    text-decoration: none;
-    font-size: 13px;
-    font-weight: 500;
-    letter-spacing: 0.3px;
-    padding: 0 16px;
-    height: 60px;
-    display: inline-flex;
-    align-items: center;
-    border-bottom: 3px solid transparent;
-    white-space: nowrap;
-    transition: color 0.15s;
-}
-.s-nav-link:hover { color: white; }
-.s-nav-link.s-nav-active {
-    color: white;
-    border-bottom-color: var(--blue);
 }
 
 /* ── Content area ── */
@@ -597,6 +546,48 @@ h1, h2, h3 { font-family: 'Plus Jakarta Sans', sans-serif !important; color: var
     font-size: 11px; color: var(--light-muted);
     letter-spacing: 1.5px; text-transform: uppercase;
 }
+
+/* ── Nav row (first stHorizontalBlock on the page) ── */
+div[data-testid="stHorizontalBlock"]:first-of-type {
+    background: var(--navy) !important;
+    margin: 0 -1rem !important;
+    padding: 0 24px !important;
+    gap: 0 !important;
+    border-bottom: 4px solid var(--blue) !important;
+    min-height: 60px !important;
+    align-items: center !important;
+}
+div[data-testid="stHorizontalBlock"]:first-of-type > div {
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+}
+div[data-testid="stHorizontalBlock"]:first-of-type .stButton > button,
+div[data-testid="stHorizontalBlock"]:first-of-type .stButton button,
+div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-secondary"],
+div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-primary"] {
+    background: transparent !important;
+    color: rgba(255,255,255,0.65) !important;
+    border: none !important;
+    border-bottom: 3px solid transparent !important;
+    border-radius: 0 !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.3px !important;
+    text-transform: none !important;
+    padding: 0 20px !important;
+    height: 56px !important;
+    width: 100% !important;
+    white-space: nowrap !important;
+    transition: color 0.15s !important;
+}
+div[data-testid="stHorizontalBlock"]:first-of-type .stButton > button:hover,
+div[data-testid="stHorizontalBlock"]:first-of-type .stButton button:hover,
+div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-secondary"]:hover,
+div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-primary"]:hover {
+    color: white !important;
+    background: transparent !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -608,20 +599,29 @@ import base64 as _b64
 with open(os.path.join(PROJECT_ROOT, "assets", "logo_white.png"), "rb") as _lf:
     _logo_b64 = _b64.b64encode(_lf.read()).decode()
 
-# Nav bar with logo + HTML anchor links (no st.button — avoids Streamlit CSS conflicts)
+# Nav: logo in first col (wide), then spacer, then three nav buttons.
+# CSS targets div[data-testid="stHorizontalBlock"]:first-of-type to style
+# the whole row as the navy bar without any :has() hacks.
 _pg = st.session_state.page
-_d = "s-nav-active" if _pg == "dashboard" else ""
-_g = "s-nav-active" if _pg == "generate" else ""
-_l = "s-nav-active" if _pg == "library" else ""
-st.markdown(f"""
-<div class="s-nav-bar">
-    <img src="data:image/png;base64,{_logo_b64}" class="s-nav-logo" alt="Scaler">
-    <div class="s-nav-spacer"></div>
-    <a href="?p=dashboard" class="s-nav-link {_d}">Dashboard</a>
-    <a href="?p=generate"  class="s-nav-link {_g}">Generate</a>
-    <a href="?p=library"   class="s-nav-link {_l}">Library</a>
-</div>
-""", unsafe_allow_html=True)
+_nc_logo, _nc_sp, _nc1, _nc2, _nc3 = st.columns([2, 4, 1, 1, 1])
+with _nc_logo:
+    st.markdown(
+        f'<img src="data:image/png;base64,{_logo_b64}" class="s-nav-logo" alt="Scaler" '
+        f'style="height:28px;filter:brightness(0) invert(1);margin-top:16px">',
+        unsafe_allow_html=True,
+    )
+with _nc1:
+    if st.button("Dashboard", key="_nav1", use_container_width=True):
+        st.session_state.page = "dashboard"
+        st.rerun()
+with _nc2:
+    if st.button("Generate", key="_nav2", use_container_width=True):
+        st.session_state.page = "generate"
+        st.rerun()
+with _nc3:
+    if st.button("Library", key="_nav3", use_container_width=True):
+        st.session_state.page = "library"
+        st.rerun()
 
 st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
