@@ -101,7 +101,7 @@ class ClaudePersonalization(BasePersonalization):
         if not api_key:
             try:
                 import streamlit as st
-                api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+                api_key = st.secrets["ANTHROPIC_API_KEY"]
             except Exception:
                 pass
         if not api_key:

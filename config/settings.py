@@ -16,7 +16,7 @@ def _get(key: str, default: str = "") -> str:
         return value
     try:
         import streamlit as st
-        return st.secrets.get(key, default)
+        return st.secrets[key]
     except Exception:
         return default
 
