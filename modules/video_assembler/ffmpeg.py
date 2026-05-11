@@ -3,6 +3,7 @@ import subprocess
 import json
 import uuid
 from modules.video_assembler.base import BaseVideoAssembler
+from modules.annotation.pen_annotator import make_annotated_clip, load_element_boxes
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,8 +24,39 @@ def _get_audio_duration(audio_path: str) -> float:
     return float(data["streams"][0]["duration"])
 
 
-def _make_clip(image_path: str, audio_path: str, output_path: str, duration: float):
-    """Combine one slide image + audio into a single video clip."""
+def _make_clip(image_path: str, audio_path: str, output_path: str, duration: float, annotate: bool = True):
+    """Combine one slide image (or animation MP4) + audio into a single video clip.
+    If image_path is an MP4 (animation clip), overlays the audio onto it.
+    If annotate=True and a .boxes.json exists alongside a PNG, generates an animated pen-stroke clip.
+    Otherwise, creates a static image loop.
+    """
+    # Animation MP4 — overlay audio onto existing video
+    if image_path.lower().endswith(".mp4"):
+        logger.info(f"  Animation clip — overlaying audio")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", image_path,
+            "-i", audio_path,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-longest",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg animation clip failed: {result.stderr}")
+        return
+
+    # Slide PNG — check for pen annotation (skipped for intro/non-annotated clips)
+    element_boxes = load_element_boxes(image_path) if annotate else []
+
+    if element_boxes:
+        logger.info(f"  Pen annotation enabled — {len(element_boxes)} elements")
+        make_annotated_clip(image_path, audio_path, output_path, duration, element_boxes)
+        return
+
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
@@ -75,7 +107,7 @@ class FFmpegVideoAssembler(BaseVideoAssembler):
         self.temp_dir = temp_dir
         os.makedirs(temp_dir, exist_ok=True)
 
-    def assemble(self, slide_image_paths: list[str], audio_paths: list[str], output_path: str) -> str:
+    def assemble(self, slide_image_paths: list[str], audio_paths: list[str], output_path: str, annotation_mask: list = None) -> str:
         if len(slide_image_paths) != len(audio_paths):
             raise ValueError("Number of slides and audio files must match")
 
@@ -89,10 +121,11 @@ class FFmpegVideoAssembler(BaseVideoAssembler):
 
         for i, (image_path, audio_path) in enumerate(zip(slide_image_paths, audio_paths)):
             clip_path = os.path.join(job_dir, f"clip_{i:03d}.mp4")
+            annotate = annotation_mask is None or (i < len(annotation_mask) and annotation_mask[i])
 
             logger.info(f"  Creating clip {i+1}/{len(slide_image_paths)}: {os.path.basename(image_path)}")
             duration = _get_audio_duration(audio_path)
-            _make_clip(image_path, audio_path, clip_path, duration)
+            _make_clip(image_path, audio_path, clip_path, duration, annotate=annotate)
             clip_paths.append(clip_path)
 
         logger.info("Concatenating all clips into final video...")

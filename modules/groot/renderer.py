@@ -1,66 +1,147 @@
 """
-Groot Slide Renderer
-====================
-Renders groot's canvas elements as 1920x1080 PNG images using Pillow.
+Groot Slide Renderer — Scaler 3.0 Rebrand
+==========================================
+Renders groot's canvas elements as 1920x1080 PNG images using Pillow,
+styled with the Scaler 3.0 design system.
+
+Design system:
+  - Background: #FCFCFC (off-white, never pure white)
+  - Header: #011845 (navy) with #0055FF accent bar
+  - Headlines: Clash Grotesk, color #101E37
+  - Body: Plus Jakarta Sans, color #0B1529
+  - No rounded corners, no shadows — sharp, editorial, premium
 
 Element coordinate system (from groot API):
-  - Canvas is 1000 units wide x 562.5 units tall (16:9 ratio)
-  - viewportSize=1000, viewportRatio=0.5625
-  - Element fields: left, top, width, height (all in canvas units)
-  - Output PNG: 1920x1080 pixels → scale factor = 1920/1000 = 1.92
-
-Element types returned by scene-content:
-  - "text": {left, top, width, height, content (HTML), defaultFontName, defaultColor, rotate}
-  - "shape": {left, top, width, height, path, fill, viewBox, rotate}
-  - "image": {left, top, width, height, src}
-
-HTML in text content uses inline styles: font-size, font-weight, color, text-align, etc.
+  - Canvas: 1000 x 562.5 units (16:9)
+  - Output: 1920x1080 pixels → scale = 1.92
+  - pixel_x = element.left * 1.92
+  - pixel_y = element.top * 1.92 + HEADER_TOTAL_H
 """
 
 import re
 import os
 from utils.logger import get_logger
 
+# ── Logo (pre-rendered PNG, cached) ───────────────────────────────────────────
+_LOGO_PNG_CACHE = None
+
+
+def _get_logo_png():
+    """Load the pre-rendered white Scaler logo PNG (cached)."""
+    global _LOGO_PNG_CACHE
+    if _LOGO_PNG_CACHE is not None:
+        return _LOGO_PNG_CACHE
+
+    png_path = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "../../assets/logo_white.png")
+    )
+    if not os.path.exists(png_path):
+        return None
+
+    try:
+        from PIL import Image
+        _LOGO_PNG_CACHE = Image.open(png_path).convert("RGBA")
+        return _LOGO_PNG_CACHE
+    except Exception:
+        return None
+
 logger = get_logger(__name__)
 
 # ── Dimensions ─────────────────────────────────────────────────────────────────
-CANVAS_W = 1000       # groot canvas width in units
-CANVAS_H = 562.5      # groot canvas height in units (1000 * 0.5625)
-OUT_W = 1920          # output PNG width
-OUT_H = 1080          # output PNG height
-SCALE = OUT_W / CANVAS_W   # 1.92
+CANVAS_W = 1000
+CANVAS_H = 562.5
+OUT_W = 1920
+OUT_H = 1080
+SCALE = OUT_W / CANVAS_W  # 1.92
 
-# ── Scaler brand palette (header only) ────────────────────────────────────────
-SCALER_HEADER = (15, 61, 135)
-ACCENT_GOLD = (255, 200, 80)
-HEADER_H = 60   # pixel height of top branding bar
+# ── Scaler 3.0 Color Palette ──────────────────────────────────────────────────
+# Primary
+BRAND_BLUE = (0, 85, 255)         # #0055FF — accent, links, active states
+NAVY = (1, 24, 69)                # #011845 — header bg, dark sections
+CTA_BLUE = (0, 76, 229)           # #004CE5 — CTA-weight blue
+
+# Neutrals
+BG_COLOR = (252, 252, 252)        # #FCFCFC — page background (off-white)
+TEXT_PRIMARY = (11, 21, 41)       # #0B1529 — body text
+TEXT_HEADING = (16, 30, 55)       # #101E37 — headlines
+TEXT_MUTED = (105, 105, 105)      # #696969 — metadata, secondary text
+TEXT_LIGHT_MUTED = (132, 132, 132)  # #848484 — labels, eyebrows
+PANEL_BG = (246, 246, 246)        # #F6F6F6 — card/panel backgrounds
+ICE_BG = (233, 241, 255)          # #E9F1FF — light blue tint
+BORDER_COLOR = (202, 192, 192)    # #CAC0C0 — card borders
+
+# Header layout
+HEADER_H = 56           # navy bar height
+ACCENT_BAR_H = 4        # brand blue accent bar below header
+HEADER_TOTAL_H = HEADER_H + ACCENT_BAR_H  # 60px total
+
+# ── Font paths ─────────────────────────────────────────────────────────────────
+_FONTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "assets", "fonts")
+
+_FONT_PATHS = {
+    # Clash Grotesk — headlines
+    "heading": os.path.join(_FONTS_DIR, "ClashGrotesk-Regular.ttf"),
+    "heading_bold": os.path.join(_FONTS_DIR, "ClashGrotesk-Medium.ttf"),
+    # Plus Jakarta Sans — body
+    "body": os.path.join(_FONTS_DIR, "PlusJakartaSans-Regular.ttf"),
+    "body_bold": os.path.join(_FONTS_DIR, "PlusJakartaSans-Medium.ttf"),
+}
+
+# System font fallbacks
+_FALLBACK_FONTS = {
+    True: [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ],
+    False: [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ],
+}
+
+# Threshold: text above this size (in canvas units) uses Clash Grotesk (headline font)
+_HEADING_FONT_SIZE_THRESHOLD = 24.0
 
 
-# ── Font utilities ─────────────────────────────────────────────────────────────
-
-def _load_font(size: int, bold: bool = False):
+def _load_font(size: int, bold: bool = False, role: str = "body"):
+    """
+    Load a font for the given role.
+      role="heading" → Clash Grotesk
+      role="body"    → Plus Jakarta Sans
+    Falls back to system fonts if the rebrand fonts are missing.
+    """
     from PIL import ImageFont
-    candidates = (
-        [
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        ]
-        if bold else
-        [
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        ]
-    )
     size = max(8, int(size))
-    for path in candidates:
-        if os.path.exists(path):
+
+    # Try rebrand font first
+    if role == "heading":
+        key = "heading_bold" if bold else "heading"
+    else:
+        key = "body_bold" if bold else "body"
+
+    path = _FONT_PATHS.get(key, "")
+    if path and os.path.exists(path):
+        try:
+            return ImageFont.truetype(path, size)
+        except (IOError, OSError):
+            pass
+
+    # Fallback to system fonts
+    for fallback in _FALLBACK_FONTS.get(bold, []):
+        if os.path.exists(fallback):
             try:
-                return ImageFont.truetype(path, size)
+                return ImageFont.truetype(fallback, size)
             except (IOError, OSError):
                 continue
+
     return ImageFont.load_default()
+
+
+def _font_role_for_size(font_size: float) -> str:
+    """Large text = heading font (Clash Grotesk), small = body (Plus Jakarta Sans)."""
+    return "heading" if font_size >= _HEADING_FONT_SIZE_THRESHOLD else "body"
 
 
 # ── HTML parsing ───────────────────────────────────────────────────────────────
@@ -79,7 +160,7 @@ def _hex_to_rgb(hex_color: str) -> tuple:
     try:
         return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
     except (ValueError, IndexError):
-        return (51, 51, 51)
+        return TEXT_PRIMARY
 
 
 def _parse_style(style_str: str) -> dict:
@@ -116,20 +197,17 @@ class _TextSegment:
 def _parse_html_to_segments(
     html: str,
     default_font_size: float = 18.0,
-    default_color: tuple = (51, 51, 51),
+    default_color: tuple = TEXT_PRIMARY,
 ) -> list[_TextSegment]:
     """
     Parse HTML content into text segments preserving font-size, weight, and color.
     Handles <p>, <span>, <strong>, <em>, <li>, <br>.
     """
-    # Normalize line breaks
     html = re.sub(r"<br\s*/?>", "\n", html, flags=re.I)
     html = re.sub(r"<li[^>]*>", "\n• ", html, flags=re.I)
     html = re.sub(r"</(p|div|h[1-6]|li|ul|ol)>", "\n", html, flags=re.I)
 
     segments = []
-    # Process tag by tag
-    pos = 0
     style_stack = [{"font_size": default_font_size, "bold": False, "color": default_color, "align": "left"}]
 
     token_re = re.compile(r"<([^>]+)>|([^<]+)", re.S)
@@ -163,7 +241,6 @@ def _parse_html_to_segments(
                     style_stack.pop()
             else:
                 cur = dict(style_stack[-1])
-                # Extract style attribute
                 style_m = re.search(r'style\s*=\s*["\']([^"\']*)["\']', tag_content, re.I)
                 if style_m:
                     parsed = _parse_style(style_m.group(1))
@@ -175,11 +252,8 @@ def _parse_html_to_segments(
                         cur["color"] = parsed["color"]
                     if parsed["align"] != "left":
                         cur["align"] = parsed["align"]
-                # Tag-level bold
                 if tag_name in ("strong", "b"):
                     cur["bold"] = True
-                if tag_name in ("em", "i"):
-                    pass  # could add italic support later
                 style_stack.append(cur)
 
     return segments
@@ -210,80 +284,99 @@ def _wrap_line(draw, text: str, font, max_width_px: int) -> list[str]:
     return lines or [""]
 
 
+# ── Header rendering ──────────────────────────────────────────────────────────
+
+def _render_header(img, draw):
+    """
+    Scaler 3.0 header: navy bar + brand blue accent strip + SVG logo.
+    Falls back to "SCALER" text if logo PNG is unavailable.
+    """
+    # Navy header bar
+    draw.rectangle([(0, 0), (OUT_W, HEADER_H)], fill=NAVY)
+
+    # Brand blue accent bar (4px strip below header)
+    draw.rectangle(
+        [(0, HEADER_H), (OUT_W, HEADER_H + ACCENT_BAR_H)],
+        fill=BRAND_BLUE,
+    )
+
+    # Logo: try SVG-rendered PNG first, fall back to text
+    logo_img = _get_logo_png()
+    if logo_img is not None:
+        lx = 40
+        ly = (HEADER_H - logo_img.height) // 2
+        img.paste(logo_img, (lx, ly), logo_img)
+    else:
+        logo_font = _load_font(22, bold=True, role="heading")
+        draw.text((40, 16), "SCALER", font=logo_font, fill=(252, 252, 252))
+
+
 # ── Main renderer ──────────────────────────────────────────────────────────────
 
 def render_groot_elements_as_png(
     elements: list, output_path: str, scene_title: str = ""
 ) -> str:
     """
-    Renders a list of groot slide elements onto a 1920x1080 PNG.
-
-    Coordinate mapping:
-      pixel_x = element.left * SCALE
-      pixel_y = element.top  * SCALE + HEADER_H
-      font_px  = css_font_size * SCALE
+    Renders a list of groot slide elements onto a 1920x1080 PNG
+    using the Scaler 3.0 design system.
     """
     from PIL import Image, ImageDraw
 
-    # Background: use element background color if present, else white
-    bg_color = _get_background_color(elements)
-    img = Image.new("RGB", (OUT_W, OUT_H), color=bg_color)
+    img = Image.new("RGB", (OUT_W, OUT_H), color=BG_COLOR)
     draw = ImageDraw.Draw(img)
 
-    # Scaler header bar
-    draw.rectangle([(0, 0), (OUT_W, HEADER_H)], fill=SCALER_HEADER)
-    logo_font = _load_font(24, bold=True)
-    draw.text((30, 18), "SCALER", font=logo_font, fill=ACCENT_GOLD)
+    _render_header(img, draw)
 
     if not elements:
         _render_no_content(draw, scene_title)
     else:
         for elem in sorted(elements, key=lambda e: e.get("top", 0)):
-            _render_element(draw, elem, bg_color)
+            _render_element(draw, elem)
 
     img.save(output_path, "PNG")
     logger.debug(f"Rendered → {output_path}")
     return output_path
 
 
-def _get_background_color(elements: list) -> tuple:
-    """Try to infer background color from elements (return white if not found)."""
-    return (255, 255, 255)
-
-
-def _render_element(draw, elem: dict, bg_color: tuple):
+def _render_element(draw, elem: dict):
     """Dispatch element rendering by type."""
     elem_type = elem.get("type", "text")
     if elem_type == "text":
         _render_text_element(draw, elem)
     elif elem_type == "shape":
         _render_shape_element(draw, elem)
-    # image elements: skip for now (require HTTP fetch)
 
 
 def _render_text_element(draw, elem: dict):
-    """Render a text element at its canvas position."""
+    """Render a text element using Scaler 3.0 typography."""
     left_px = int(elem.get("left", 0) * SCALE)
-    top_px = int(elem.get("top", 0) * SCALE) + HEADER_H
+    top_px = int(elem.get("top", 0) * SCALE) + HEADER_TOTAL_H
     width_px = int(elem.get("width", 200) * SCALE)
     height_px = int(elem.get("height", 50) * SCALE)
 
     content_html = elem.get("content", "")
-    default_color_hex = elem.get("defaultColor", "#333333")
-    default_color = _hex_to_rgb(default_color_hex) if default_color_hex.startswith("#") else (51, 51, 51)
+    default_color_hex = elem.get("defaultColor", "#0B1529")
+    default_color = _hex_to_rgb(default_color_hex) if default_color_hex.startswith("#") else TEXT_PRIMARY
 
     segments = _parse_html_to_segments(content_html, default_font_size=18.0, default_color=default_color)
 
-    # Render each segment's lines
     y = top_px
-    bottom_limit = top_px + height_px + int(30 * SCALE)  # slight overflow allowed
+    bottom_limit = top_px + height_px + int(30 * SCALE)
 
     for seg in segments:
         if not seg.text:
             continue
 
         font_size_px = max(10, int(seg.font_size * SCALE))
-        font = _load_font(font_size_px, bold=seg.bold)
+        role = _font_role_for_size(seg.font_size)
+
+        # Headings use Clash Grotesk + heading color override
+        if role == "heading" and seg.color == TEXT_PRIMARY:
+            fill_color = TEXT_HEADING
+        else:
+            fill_color = seg.color
+
+        font = _load_font(font_size_px, bold=seg.bold, role=role)
         line_h = int(font_size_px * 1.35)
 
         for raw_line in seg.text.split("\n"):
@@ -296,24 +389,24 @@ def _render_text_element(draw, elem: dict):
             for line in wrapped:
                 if y > bottom_limit:
                     break
-                draw.text((left_px, y), line, font=font, fill=seg.color)
+                draw.text((left_px, y), line, font=font, fill=fill_color)
                 y += line_h
 
 
 def _render_shape_element(draw, elem: dict):
-    """Render a shape element (rectangles, lines) at canvas position."""
+    """Render a shape element at canvas position."""
     left_px = int(elem.get("left", 0) * SCALE)
-    top_px = int(elem.get("top", 0) * SCALE) + HEADER_H
+    top_px = int(elem.get("top", 0) * SCALE) + HEADER_TOTAL_H
     width_px = int(elem.get("width", 10) * SCALE)
     height_px = int(elem.get("height", 10) * SCALE)
-    fill_hex = elem.get("fill", "#cccccc")
+    fill_hex = elem.get("fill", "#D7DDE8")
 
     if fill_hex and fill_hex.startswith("#"):
         fill = _hex_to_rgb(fill_hex)
     else:
-        fill = (200, 200, 200)
+        fill = (215, 221, 232)  # steel gray default
 
-    # Draw rectangle/bar
+    # Sharp corners — no border-radius per Scaler 3.0
     draw.rectangle(
         [(left_px, top_px), (left_px + width_px, top_px + height_px)],
         fill=fill,
@@ -321,22 +414,160 @@ def _render_shape_element(draw, elem: dict):
 
 
 def _render_no_content(draw, title: str):
-    """Fallback when no elements are available."""
-    font = _load_font(48, bold=True)
-    draw.text((80, HEADER_H + 80), title or "Slide", font=font, fill=(51, 51, 51))
-    sub = _load_font(28)
-    draw.text((80, HEADER_H + 160), "Content generated by Groot AI", font=sub, fill=(100, 120, 180))
+    """Fallback when no elements are available — Scaler 3.0 styled."""
+    title_font = _load_font(48, bold=True, role="heading")
+    draw.text((80, HEADER_TOTAL_H + 80), title or "Slide", font=title_font, fill=TEXT_HEADING)
+    sub_font = _load_font(24, role="body")
+    draw.text((80, HEADER_TOTAL_H + 150), "Content generated by Scaler Primer", font=sub_font, fill=TEXT_MUTED)
+
+
+# ── Text measurement (for pen annotation bounding boxes) ─────────────────────
+
+def _measure_text_bounds(elem: dict) -> tuple:
+    """
+    Simulate the same text layout as _render_text_element to find the
+    actual pixel bounds of rendered text (not the container bounds).
+
+    Returns (x1, y1, x2, y_text_bottom) where y_text_bottom is where
+    the last line of text actually ends, NOT the container bottom.
+    """
+    from PIL import Image, ImageDraw as _ID
+
+    left_px = int(elem.get("left", 0) * SCALE)
+    top_px = int(elem.get("top", 0) * SCALE) + HEADER_TOTAL_H
+    width_px = int(elem.get("width", 200) * SCALE)
+    height_px = int(elem.get("height", 50) * SCALE)
+
+    content_html = elem.get("content", "")
+    if not content_html.strip():
+        return (left_px, top_px, left_px + width_px, top_px)
+
+    segments = _parse_html_to_segments(content_html, default_font_size=18.0)
+
+    _tmp = Image.new("RGB", (1, 1))
+    _draw = _ID.Draw(_tmp)
+
+    y = top_px
+    bottom_limit = top_px + height_px + int(30 * SCALE)
+    max_x_right = left_px
+
+    for seg in segments:
+        if not seg.text:
+            continue
+        font_size_px = max(10, int(seg.font_size * SCALE))
+        role = _font_role_for_size(seg.font_size)
+        font = _load_font(font_size_px, bold=seg.bold, role=role)
+        line_h = int(font_size_px * 1.35)
+
+        for raw_line in seg.text.split("\n"):
+            if y > bottom_limit:
+                break
+            if not raw_line.strip():
+                y += int(line_h * 0.4)
+                continue
+            wrapped = _wrap_line(_draw, raw_line, font, width_px)
+            for line in wrapped:
+                if y > bottom_limit:
+                    break
+                try:
+                    bbox = _draw.textbbox((0, 0), line, font=font)
+                    line_w = bbox[2] - bbox[0]
+                except AttributeError:
+                    line_w = len(line) * max(8, font_size_px // 2)
+                max_x_right = max(max_x_right, left_px + line_w)
+                y += line_h
+
+    y_text_bottom = y
+    max_x_right = min(max_x_right, left_px + width_px)
+
+    return (left_px, top_px, max_x_right, y_text_bottom)
+
+
+def extract_element_boxes(elements: list) -> list:
+    """
+    Extract bounding boxes for text elements that should be annotated,
+    with a style decision per element based on its properties.
+
+    Style rules (smart heuristic — no AI call needed):
+      - Titles (font >= 28):         "underline"  (main heading highlight)
+      - Key terms (font 20-27, bold, short ≤6 words): "circle" (emphasis)
+      - Sub-headings (font 20-27, longer text):        "underline"
+      - Body text (font < 20):       skipped entirely
+
+    Returns list of dicts: [{"box": [x1,y1,x2,y2], "style": "underline"|"circle"}, ...]
+    Sorted top-to-bottom, max 5 annotations per slide.
+    """
+    MIN_WIDTH = 100
+    MIN_TEXT_HEIGHT = 10
+    MIN_FONT_FOR_ANNOTATION = 20.0  # skip small body text
+
+    annotations = []
+    for elem in sorted(elements, key=lambda e: e.get("top", 0)):
+        if elem.get("type", "text") != "text":
+            continue
+
+        content_html = elem.get("content", "")
+        if not content_html.strip():
+            continue
+        segments = _parse_html_to_segments(content_html, default_font_size=18.0)
+        text_segments = [s for s in segments if s.text.strip()]
+        if not text_segments:
+            continue
+
+        max_font_size = max(s.font_size for s in text_segments)
+        is_bold = any(s.bold for s in text_segments)
+        plain_text = " ".join(s.text.strip() for s in text_segments)
+        word_count = len(plain_text.split())
+
+        # Skip small body text
+        if max_font_size < MIN_FONT_FOR_ANNOTATION:
+            continue
+
+        x1, y1, x2, y2 = _measure_text_bounds(elem)
+        w = x2 - x1
+        h = y2 - y1
+
+        if w < MIN_WIDTH or h < MIN_TEXT_HEIGHT:
+            continue
+
+        x2 = min(x2, OUT_W - 20)
+        y2 = min(y2, OUT_H - 30)
+
+        # Decide style based on element properties
+        if max_font_size >= 28:
+            style = "underline"  # big title
+        elif is_bold and word_count <= 6:
+            style = "circle"     # short bold key term
+        else:
+            style = "underline"  # sub-heading or medium text
+
+        annotations.append({"box": [x1, y1, x2, y2], "style": style, "text": plain_text})
+
+    # Cap at 5 annotations per slide
+    annotations = annotations[:5]
+
+    logger.info(
+        f"  extract_element_boxes: {len(elements)} elements → "
+        f"{len(annotations)} annotations "
+        f"({sum(1 for a in annotations if a['style']=='underline')} underline, "
+        f"{sum(1 for a in annotations if a['style']=='circle')} circle)"
+    )
+    return annotations
 
 
 def render_fallback_slide(title: str, output_path: str) -> str:
-    """Creates a minimal error/placeholder slide PNG."""
+    """Creates a minimal fallback slide PNG — Scaler 3.0 styled."""
     from PIL import Image, ImageDraw
-    img = Image.new("RGB", (OUT_W, OUT_H), color=(240, 240, 245))
+
+    img = Image.new("RGB", (OUT_W, OUT_H), color=BG_COLOR)
     draw = ImageDraw.Draw(img)
-    draw.rectangle([(0, 0), (OUT_W, HEADER_H)], fill=SCALER_HEADER)
-    logo_font = _load_font(24, bold=True)
-    draw.text((30, 18), "SCALER", font=logo_font, fill=ACCENT_GOLD)
-    title_font = _load_font(48, bold=True)
-    draw.text((80, HEADER_H + 80), title, font=title_font, fill=(51, 51, 51))
+    _render_header(img, draw)
+
+    title_font = _load_font(48, bold=True, role="heading")
+    draw.text((80, HEADER_TOTAL_H + 80), title, font=title_font, fill=TEXT_HEADING)
+
+    sub_font = _load_font(22, role="body")
+    draw.text((80, HEADER_TOTAL_H + 150), "Scaler Primer", font=sub_font, fill=TEXT_MUTED)
+
     img.save(output_path, "PNG")
     return output_path

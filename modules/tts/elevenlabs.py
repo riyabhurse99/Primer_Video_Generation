@@ -1,11 +1,13 @@
 import os
+import json
+import base64
 import requests
 from modules.tts.base import BaseTTS
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
 
 
 class ElevenLabsTTS(BaseTTS):
@@ -49,16 +51,71 @@ class ElevenLabsTTS(BaseTTS):
             "model_id": "eleven_multilingual_v2",
             "language_code": "en",
             "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75,
+                "stability": 0.4,
+                "similarity_boost": 0.6,
+                "style": 0.35,
+                "use_speaker_boost": True,
             },
         }
 
         response = requests.post(url, headers=self.headers, json=payload, timeout=60)
         response.raise_for_status()
 
+        data = response.json()
+
+        # Decode and save audio (returned as base64)
+        audio_bytes = base64.b64decode(data["audio_base64"])
         with open(output_path, "wb") as f:
-            f.write(response.content)
+            f.write(audio_bytes)
+
+        # Save word-level timestamps alongside the MP3
+        alignment = data.get("alignment")
+        if alignment:
+            ts_path = os.path.splitext(output_path)[0] + ".timestamps.json"
+            # Build word-level timing from character-level data
+            words = _chars_to_words(alignment)
+            with open(ts_path, "w") as f:
+                json.dump(words, f)
+            logger.info(f"Timestamps saved: {ts_path} ({len(words)} words)")
 
         logger.info(f"Audio saved: {output_path}")
         return output_path
+
+
+def _chars_to_words(alignment: dict) -> list[dict]:
+    """
+    Convert ElevenLabs character-level alignment to word-level timing.
+    Returns: [{"word": "hello", "start": 0.1, "end": 0.35}, ...]
+    """
+    chars = alignment.get("characters", [])
+    starts = alignment.get("character_start_times_seconds", [])
+    ends = alignment.get("character_end_times_seconds", [])
+
+    words = []
+    current_word = ""
+    word_start = None
+
+    for i, ch in enumerate(chars):
+        if ch in (" ", "\n", "\t"):
+            if current_word:
+                words.append({
+                    "word": current_word,
+                    "start": word_start,
+                    "end": ends[i - 1] if i > 0 else word_start,
+                })
+                current_word = ""
+                word_start = None
+        else:
+            if word_start is None:
+                word_start = starts[i] if i < len(starts) else 0.0
+            current_word += ch
+
+    # Last word
+    if current_word:
+        words.append({
+            "word": current_word,
+            "start": word_start,
+            "end": ends[-1] if ends else word_start,
+        })
+
+    return words

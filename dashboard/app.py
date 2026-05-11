@@ -65,7 +65,7 @@ st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
     "Navigate",
-    ["Generate Video", "Generate Primer", "Video Library", "Module Tester", "Metrics"]
+    ["Generate Video", "Generate from Document", "Generate Primer", "Video Library", "Module Tester", "Metrics"]
 )
 
 st.sidebar.markdown("---")
@@ -110,6 +110,28 @@ if page == "Generate Video":
             video_assembler = FFmpegVideoAssembler(temp_dir=TEMP_DIR)
             storage = LocalStorage(base_path=OUTPUT_DIR)
 
+            # Build call_llm for Claude fallback (used when Groot fails)
+            try:
+                import anthropic as _anthropic
+                from config.settings import CLAUDE_MODEL
+                try:
+                    _claude_key = st.secrets["ANTHROPIC_API_KEY"]
+                except Exception:
+                    from config.settings import ANTHROPIC_API_KEY as _claude_key
+                if _claude_key:
+                    _claude_client = _anthropic.Anthropic(api_key=_claude_key)
+                    def _call_llm(prompt: str) -> str:
+                        msg = _claude_client.messages.create(
+                            model=CLAUDE_MODEL,
+                            max_tokens=2048,
+                            messages=[{"role": "user", "content": prompt}],
+                        )
+                        return msg.content[0].text
+                else:
+                    _call_llm = None
+            except Exception:
+                _call_llm = None
+
             pipeline = DirectPipeline(
                 slide_generator=slide_generator,
                 tts=tts,
@@ -117,6 +139,7 @@ if page == "Generate Video":
                 storage=storage,
                 temp_dir=TEMP_DIR,
                 output_dir=OUTPUT_DIR,
+                call_llm=_call_llm,
             )
 
             os.makedirs(TEMP_DIR, exist_ok=True)
@@ -138,6 +161,122 @@ if page == "Generate Video":
                     )
             else:
                 st.error("Video generation failed. Check the logs for details.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: GENERATE FROM DOCUMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Generate from Document":
+    st.title("Generate Video from Document")
+    st.markdown("Paste content from a case study or assignment document. Claude will structure it into a guided video walkthrough.")
+    st.markdown("---")
+
+    doc_topic = st.text_input(
+        "Case Study / Topic Name",
+        value="Driver Drowsiness Detection System",
+        key="doc_topic",
+    )
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        problem_statement = st.text_area(
+            "Problem Statement",
+            height=250,
+            key="doc_problem",
+            placeholder="Paste the problem statement here...",
+        )
+    with col_b:
+        dataset_description = st.text_area(
+            "Dataset Description",
+            height=250,
+            key="doc_dataset",
+            placeholder="Paste the dataset description here...",
+        )
+
+    approach_document = st.text_area(
+        "Approach Document",
+        height=250,
+        key="doc_approach",
+        placeholder="Paste the approach / methodology document here...",
+    )
+
+    if st.button("Generate Document Video", type="primary", key="doc_run"):
+        if not problem_statement.strip() or not approach_document.strip():
+            st.error("Please provide at least the Problem Statement and Approach Document.")
+        else:
+            from pipelines.document import DocumentPipeline
+            from modules.tts.elevenlabs import ElevenLabsTTS
+            from modules.video_assembler.ffmpeg import FFmpegVideoAssembler
+            from modules.storage.local import LocalStorage
+
+            # TTS — read directly from .env to avoid stale caches
+            from dotenv import dotenv_values
+            _env = dotenv_values(os.path.join(PROJECT_ROOT, ".env"))
+            el_api_key = _env.get("ELEVENLABS_API_KEY", "") or ELEVENLABS_API_KEY
+            el_voice_id = _env.get("ELEVENLABS_VOICE_ID", "") or ELEVENLABS_VOICE_ID
+            st.info(f"ElevenLabs: key={'SET' if el_api_key else 'EMPTY'}, voice={el_voice_id[:8]}...")
+            tts = ElevenLabsTTS(api_key=el_api_key, voice_id=el_voice_id)
+
+            video_assembler = FFmpegVideoAssembler(temp_dir=TEMP_DIR)
+            storage = LocalStorage(base_path=OUTPUT_DIR)
+
+            # Claude LLM (required for this pipeline)
+            _call_llm = None
+            try:
+                import anthropic as _anthropic
+                from config.settings import CLAUDE_MODEL
+                try:
+                    _claude_key = st.secrets["ANTHROPIC_API_KEY"]
+                except Exception:
+                    from config.settings import ANTHROPIC_API_KEY as _claude_key
+                if _claude_key:
+                    _claude_client = _anthropic.Anthropic(api_key=_claude_key)
+                    def _call_llm(prompt: str) -> str:
+                        msg = _claude_client.messages.create(
+                            model=CLAUDE_MODEL,
+                            max_tokens=16000,
+                            messages=[{"role": "user", "content": prompt}],
+                        )
+                        return msg.content[0].text
+            except Exception:
+                pass
+
+            if not _call_llm:
+                st.error("Claude API key is required for Document Pipeline. Set ANTHROPIC_API_KEY.")
+            else:
+                pipeline = DocumentPipeline(
+                    tts=tts,
+                    video_assembler=video_assembler,
+                    storage=storage,
+                    call_llm=_call_llm,
+                    temp_dir=TEMP_DIR,
+                    output_dir=OUTPUT_DIR,
+                )
+
+                os.makedirs(TEMP_DIR, exist_ok=True)
+                os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+                with st.spinner(f"Generating document video for '{doc_topic}'... this may take a few minutes."):
+                    video_path = pipeline.run(
+                        topic=doc_topic,
+                        problem_statement=problem_statement,
+                        dataset_description=dataset_description or "(No dataset description provided)",
+                        approach_document=approach_document,
+                    )
+
+                if video_path and os.path.exists(video_path):
+                    st.success("Video ready!")
+                    with open(video_path, "rb") as f:
+                        st.video(f.read())
+                    with open(video_path, "rb") as f:
+                        st.download_button(
+                            "Download MP4",
+                            f.read(),
+                            file_name=f"{doc_topic.replace(' ', '_')[:50]}.mp4",
+                            mime="video/mp4",
+                        )
+                else:
+                    st.error("Video generation failed. Check the logs for details.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -308,15 +447,28 @@ elif page == "Video Library":
 
         st.markdown("---")
 
-        # Group by category
-        for category in sorted(categories):
-            vids_in_cat = [v for v in all_videos if v["category"] == category]
-            with st.expander(f"📁 {category} ({len(vids_in_cat)} videos)", expanded=False):
-                for video in vids_in_cat:
-                    st.markdown(f"**{video['name']}** — {video['size_kb']:.0f} KB")
-                    with open(video["path"], "rb") as f:
-                        st.video(f.read())
-                    st.markdown("---")
+        # Lazy-load: pick one video to play (avoids loading all into memory at once)
+        video_labels = [f"{v['category']}/{v['name']} ({v['size_kb']:.0f} KB)" for v in all_videos]
+        selected_label = st.selectbox("Select a video to play", video_labels)
+        selected_video = all_videos[video_labels.index(selected_label)]
+
+        st.markdown(f"**{selected_video['name']}**")
+        with open(selected_video["path"], "rb") as f:
+            st.video(f.read())
+
+        with open(selected_video["path"], "rb") as f:
+            st.download_button(
+                "Download MP4",
+                f.read(),
+                file_name=f"{selected_video['name'].replace(' ', '_')}.mp4",
+                mime="video/mp4",
+                key="lib_download"
+            )
+
+        st.markdown("---")
+        st.caption("All videos:")
+        for v in all_videos:
+            st.write(f"- `{v['category']}/{v['name']}` — {v['size_kb']:.0f} KB")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

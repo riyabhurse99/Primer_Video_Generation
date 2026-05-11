@@ -1,4 +1,5 @@
 import json
+import re
 import anthropic
 from models.schemas import (
     CurriculumInput, QuestionnaireInput,
@@ -99,7 +100,25 @@ class ClaudePersonalization(BasePersonalization):
         self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     def _parse_response(self, raw: str, course: str, group_level: str) -> PrimerPlan:
-        data = json.loads(raw)
+        # Strip markdown code fences Claude sometimes wraps around JSON
+        cleaned = raw.strip()
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+        if not cleaned:
+            logger.error(f"Empty response from Claude. Raw:\n{raw[:300]}")
+            raise ValueError("Claude returned an empty response")
+
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Last resort: extract the first {...} block
+            match = re.search(r"\{[\s\S]*\}", cleaned)
+            if match:
+                data = json.loads(match.group())
+            else:
+                logger.error(f"Could not parse JSON. Raw response:\n{raw[:500]}")
+                raise
         sections = []
         for s in data["sections"]:
             videos = []
@@ -124,10 +143,12 @@ Curriculum:
 """
         response = self.client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=8000,
+            max_tokens=16000,
             system=GENERIC_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}]
         )
+        if response.stop_reason == "max_tokens":
+            logger.warning("Generic plan response was truncated (max_tokens hit) — JSON may be incomplete")
         return self._parse_response(response.content[0].text, input.course, input.group_level)
 
     def generate_dynamic_plan(self, input: QuestionnaireInput) -> PrimerPlan:
@@ -144,8 +165,10 @@ Student Questionnaire Answers:
 """
         response = self.client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=8000,
+            max_tokens=16000,
             system=DYNAMIC_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}]
         )
+        if response.stop_reason == "max_tokens":
+            logger.warning("Dynamic plan response was truncated (max_tokens hit) — JSON may be incomplete")
         return self._parse_response(response.content[0].text, input.course, input.group_level)
