@@ -140,6 +140,12 @@ Generate ONE short, specific question to understand what this student already kn
 # ═══════════════════════════════════════════════════════════════════════════════
 # SESSION STATE
 # ═══════════════════════════════════════════════════════════════════════════════
+# Handle query-param nav (HTML anchor links set ?p=...)
+_qp_page = st.query_params.get("p", None)
+if _qp_page in ("dashboard", "generate", "library"):
+    st.session_state.page = _qp_page
+    st.query_params.clear()
+
 if "page" not in st.session_state:
     st.session_state.page = "dashboard"
 if "play_video" not in st.session_state:
@@ -226,46 +232,25 @@ html, body, [class*="css"] {
     border: 1px solid rgba(255,255,255,0.2);
 }
 
-/* ── Nav buttons — target only inside nav columns ── */
-div[data-testid="stHorizontalBlock"] div[data-testid="stButton"].nav-btn > button {
-    background: transparent !important;
-    color: rgba(255,255,255,0.65) !important;
-    border: none !important;
-    border-bottom: 2px solid transparent !important;
-    border-radius: 0 !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    letter-spacing: 0.3px !important;
-    text-transform: none !important;
-    padding: 0 16px !important;
-    height: 60px !important;
-}
-div[data-testid="stHorizontalBlock"] div[data-testid="stButton"].nav-btn > button:hover {
-    background: transparent !important;
-    color: white !important;
-}
-
-/* Active nav buttons */
-.nav-active > button {
-    color: white !important;
-    border-bottom: 2px solid var(--blue) !important;
-}
-
-/* ── Nav container row ── */
-.s-nav-row {
-    background: var(--navy);
-    margin: 0 -1rem;
-    padding: 0 32px;
-    display: flex;
-    align-items: center;
+/* ── Nav links (HTML anchors inside s-nav-bar) ── */
+.s-nav-link {
+    color: rgba(255,255,255,0.65);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    padding: 0 16px;
     height: 60px;
-    border-bottom: 4px solid var(--blue);
+    display: inline-flex;
+    align-items: center;
+    border-bottom: 3px solid transparent;
+    white-space: nowrap;
+    transition: color 0.15s;
 }
-
-/* ── Remove Streamlit's default top padding on the nav row ── */
-div[data-testid="stHorizontalBlock"]:has(button[data-testid="baseButton-secondary"]) > div {
-    padding: 0 !important;
-    gap: 0 !important;
+.s-nav-link:hover { color: white; }
+.s-nav-link.s-nav-active {
+    color: white;
+    border-bottom-color: var(--blue);
 }
 
 /* ── Content area ── */
@@ -568,25 +553,30 @@ div[data-testid="stHorizontalBlock"]:has(button[data-testid="baseButton-secondar
 div[data-testid="stSelectbox"] > div {
     border-radius: 0 !important;
 }
-.stButton > button {
+.stButton > button,
+.stButton button,
+[data-testid="stBaseButton-primary"],
+[data-testid="stBaseButton-secondary"] {
     background: var(--blue) !important; color: white !important;
     border: none !important; border-radius: 0 !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
     font-size: 12px !important; font-weight: 600 !important;
     letter-spacing: 1px !important; text-transform: uppercase !important;
-    padding: 12px 36px !important; height: auto !important;
+    padding: 7px 20px !important; height: auto !important; min-height: 0 !important;
+    line-height: 1.4 !important;
     transition: background 0.15s !important;
 }
-.stButton > button:hover { background: var(--cta) !important; }
-.stButton > button[kind="primary"] { background: var(--blue) !important; }
-.stButton > button[kind="primary"]:hover { background: var(--cta) !important; }
+.stButton > button:hover,
+.stButton button:hover,
+[data-testid="stBaseButton-primary"]:hover,
+[data-testid="stBaseButton-secondary"]:hover { background: var(--cta) !important; }
 .stDownloadButton > button {
     background: transparent !important; color: var(--blue) !important;
     border: 1px solid var(--blue) !important; border-radius: 0 !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
     font-size: 11px !important; font-weight: 600 !important;
     letter-spacing: 1px !important; text-transform: uppercase !important;
-    padding: 10px 28px !important;
+    padding: 7px 20px !important; height: auto !important; min-height: 0 !important;
 }
 .stDownloadButton > button:hover {
     background: var(--blue) !important; color: white !important;
@@ -618,66 +608,20 @@ import base64 as _b64
 with open(os.path.join(PROJECT_ROOT, "assets", "logo_white.png"), "rb") as _lf:
     _logo_b64 = _b64.b64encode(_lf.read()).decode()
 
-# Navy bar with logo
+# Nav bar with logo + HTML anchor links (no st.button — avoids Streamlit CSS conflicts)
+_pg = st.session_state.page
+_d = "s-nav-active" if _pg == "dashboard" else ""
+_g = "s-nav-active" if _pg == "generate" else ""
+_l = "s-nav-active" if _pg == "library" else ""
 st.markdown(f"""
 <div class="s-nav-bar">
     <img src="data:image/png;base64,{_logo_b64}" class="s-nav-logo" alt="Scaler">
     <div class="s-nav-spacer"></div>
+    <a href="?p=dashboard" class="s-nav-link {_d}">Dashboard</a>
+    <a href="?p=generate"  class="s-nav-link {_g}">Generate</a>
+    <a href="?p=library"   class="s-nav-link {_l}">Library</a>
 </div>
 """, unsafe_allow_html=True)
-
-# Streamlit nav buttons — styled as nav links via CSS, overlaid on top of bar
-st.markdown("""
-<style>
-/* Pull nav buttons up to overlap the navy bar */
-div[data-testid="stHorizontalBlock"]:has(button[data-testid="baseButton-secondary"]) {
-    background: var(--navy);
-    margin: -60px -1rem 0 -1rem;
-    padding: 0 32px;
-    height: 60px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    border-bottom: 4px solid var(--blue);
-}
-div[data-testid="stHorizontalBlock"]:has(button[data-testid="baseButton-secondary"]) .stButton > button {
-    background: transparent !important;
-    color: rgba(255,255,255,0.65) !important;
-    border: none !important;
-    border-bottom: 3px solid transparent !important;
-    border-radius: 0 !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    letter-spacing: 0.3px !important;
-    text-transform: none !important;
-    padding: 0 20px !important;
-    height: 60px !important;
-    margin-top: 4px !important;
-    white-space: nowrap !important;
-    min-width: max-content !important;
-}
-div[data-testid="stHorizontalBlock"]:has(button[data-testid="baseButton-secondary"]) .stButton > button:hover {
-    background: transparent !important;
-    color: white !important;
-    border-bottom-color: rgba(255,255,255,0.3) !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-_pg = st.session_state.page
-_nc1, _nc2, _nc3, _nc4 = st.columns([6, 1, 1, 1])
-with _nc2:
-    if st.button("Dashboard", key="_nav1"):
-        st.session_state.page = "dashboard"
-        st.rerun()
-with _nc3:
-    if st.button("Generate", key="_nav2"):
-        st.session_state.page = "generate"
-        st.rerun()
-with _nc4:
-    if st.button("Library", key="_nav3"):
-        st.session_state.page = "library"
-        st.rerun()
 
 st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
