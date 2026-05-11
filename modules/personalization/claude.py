@@ -97,7 +97,19 @@ Return ONLY valid JSON in this exact format:
 class ClaudePersonalization(BasePersonalization):
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        api_key = ANTHROPIC_API_KEY
+        if not api_key:
+            try:
+                import streamlit as st
+                api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+            except Exception:
+                pass
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not set. Add it to .env locally or "
+                "Streamlit Cloud secrets (Settings → Secrets)."
+            )
+        self.client = anthropic.Anthropic(api_key=api_key)
 
     def _parse_response(self, raw: str, course: str, group_level: str) -> PrimerPlan:
         # Strip markdown code fences Claude sometimes wraps around JSON
