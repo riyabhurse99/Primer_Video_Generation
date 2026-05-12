@@ -40,9 +40,9 @@ class DirectPipeline:
         self.output_dir = output_dir
         self.call_llm = call_llm  # Optional: (prompt: str) -> str. None = evals skipped.
 
-    def run(self, topic: str, level: str = None, scribble: bool = False, animation: bool = False) -> str:
+    def run(self, topic: str, level: str = None, scribble: bool = False, animation: bool = False, num_scenes: int = 4) -> str:
         """Generates a video for the given topic. Returns the stored video path."""
-        logger.info(f"=== Direct Pipeline START — topic='{topic}' level={level or 'generic'} ===")
+        logger.info(f"=== Direct Pipeline START — topic='{topic}' level={level or 'generic'} num_scenes={num_scenes} ===")
         pipeline_start = time.time()
 
         safe_topic = topic.replace(" ", "_").replace("/", "-")[:50]
@@ -55,7 +55,7 @@ class DirectPipeline:
             images_dir = os.path.join(video_temp_dir, "slides")
             with StepTimer() as slide_timer:
                 images, narrations = self.slide_generator.generate_slides(
-                    topic, images_dir, level=level, call_llm=self.call_llm,
+                    topic, images_dir, num_scenes=num_scenes, level=level, call_llm=self.call_llm,
                 )
 
             if not images:

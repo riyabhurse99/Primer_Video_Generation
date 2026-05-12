@@ -137,6 +137,7 @@ class DocumentPipeline:
         document_content: str,
         instructions: str,
         scribble: bool = False,
+        max_slides: int = None,
     ) -> str:
         """Generate a video from any document content.
 
@@ -174,6 +175,9 @@ class DocumentPipeline:
                     slide_plan = self._plan_slides(topic, document_content, instructions)
                     with open(plan_cache_path, "w") as f:
                         json.dump(slide_plan, f)
+            if max_slides is not None and len(slide_plan) > max_slides:
+                logger.info(f"  Capping slide plan from {len(slide_plan)} to {max_slides} slides")
+                slide_plan = slide_plan[:max_slides]
             logger.info(f"  {len(slide_plan)} slides planned ({plan_timer.elapsed:.1f}s)")
 
             # ── Step 2: Render each slide as PNG (skips existing PNGs) ───

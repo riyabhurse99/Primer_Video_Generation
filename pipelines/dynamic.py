@@ -105,8 +105,8 @@ class DynamicPrimerPipeline:
         stored_path = self.storage.save(final_video_path, f"{context}/{safe_topic}.mp4")
         return stored_path
 
-    def run(self, input: QuestionnaireInput, student_id: str, scribble: bool = False, animation: bool = False) -> PrimerOutput:
-        logger.info(f"=== Dynamic Primer Pipeline START — student={student_id}, course={input.course} ===")
+    def run(self, input: QuestionnaireInput, student_id: str, scribble: bool = False, animation: bool = False, max_videos: int = None) -> PrimerOutput:
+        logger.info(f"=== Dynamic Primer Pipeline START — student={student_id}, course={input.course} max_videos={max_videos} ===")
 
         # Step 1: Generate personalized plan from questionnaire answers
         plan = self.personalization.generate_dynamic_plan(input)
@@ -115,8 +115,12 @@ class DynamicPrimerPipeline:
         generated_videos = []
 
         for section in plan.sections:
+            if max_videos is not None and len(generated_videos) >= max_videos:
+                break
             logger.info(f"--- Section: {section.name} ({len(section.videos)} videos) ---")
             for video_script in section.videos:
+                if max_videos is not None and len(generated_videos) >= max_videos:
+                    break
                 logger.info(f"  Generating video: {video_script.topic}")
                 try:
                     context = section.name

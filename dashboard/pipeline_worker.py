@@ -30,7 +30,7 @@ def _write_progress(progress_path: str, step: str, detail: str = ""):
         pass
 
 
-def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, result_path, progress_path):
+def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num_scenes, result_path, progress_path):
     sys.path.insert(0, PROJECT_ROOT)
     os.chdir(PROJECT_ROOT)
     try:
@@ -66,12 +66,12 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, res
 
         # Patch pipeline to emit progress
         original_run = pipeline.run
-        def patched_run(topic, level=None, scribble=False, animation=False):
+        def patched_run(topic, level=None, scribble=False, animation=False, num_scenes=4):
             _write_progress(progress_path, "Generating slides", "AI is building your slides...")
-            return original_run(topic, level=level, scribble=scribble, animation=animation)
+            return original_run(topic, level=level, scribble=scribble, animation=animation, num_scenes=num_scenes)
         pipeline.run = patched_run
 
-        video_path = pipeline.run(topic, level=level, scribble=scribble, animation=animation)
+        video_path = pipeline.run(topic, level=level, scribble=scribble, animation=animation, num_scenes=num_scenes)
         _write_progress(progress_path, "Done", "Video ready!")
         with open(result_path, "w") as f:
             json.dump({"status": "ok", "path": video_path}, f)
@@ -81,7 +81,7 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, res
             json.dump({"status": "error", "error": str(e)}, f)
 
 
-def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scribble, result_path, progress_path):
+def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scribble, max_slides, result_path, progress_path):
     sys.path.insert(0, PROJECT_ROOT)
     os.chdir(PROJECT_ROOT)
     try:
@@ -124,6 +124,7 @@ def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scr
             document_content=document_content,
             instructions=instructions,
             scribble=scribble,
+            max_slides=max_slides,
         )
         _write_progress(progress_path, "Done", "Video ready!")
         with open(result_path, "w") as f:
@@ -134,7 +135,7 @@ def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scr
             json.dump({"status": "error", "error": str(e)}, f)
 
 
-def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key, scribble, animation, result_path, progress_path):
+def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key, scribble, animation, max_videos, result_path, progress_path):
     sys.path.insert(0, PROJECT_ROOT)
     os.chdir(PROJECT_ROOT)
     try:
@@ -179,7 +180,7 @@ def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key
 
         _write_progress(progress_path, "Generating videos", "Building personalized primer videos...")
         result = pipeline.run(questionnaire, student_id="student_demo_001",
-                              scribble=scribble, animation=animation)
+                              scribble=scribble, animation=animation, max_videos=max_videos)
 
         videos = [{"path": v.video_path, "topic": v.topic, "section": v.section}
                   for v in result.videos]

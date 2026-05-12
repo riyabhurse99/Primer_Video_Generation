@@ -1244,6 +1244,7 @@ elif page == "generate":
             st.session_state.gen_animation = animation
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        num_scenes = st.slider("Max Slides", min_value=2, max_value=8, value=4, step=1, key="slider_scenes_single")
         instructor_voice = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_single")
 
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
@@ -1259,7 +1260,7 @@ elif page == "generate":
                     from dashboard.pipeline_worker import run_single_topic
                     el_k, _ = _get_el_creds()
                     selected_voice_id = VOICE_MAP[instructor_voice]
-                    _start_process(run_single_topic, (topic, level, el_k, selected_voice_id, _get_llm_key(), scribble, animation))
+                    _start_process(run_single_topic, (topic, level, el_k, selected_voice_id, _get_llm_key(), scribble, animation, num_scenes))
                     st.rerun()
 
     # ── Personalized Primer ───────────────────────────────────────────────────
@@ -1481,6 +1482,7 @@ elif page == "generate":
                 st.session_state.gen_animation = pp_animation
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            max_videos = st.slider("Max Videos", min_value=1, max_value=10, value=5, step=1, key="slider_max_videos_pp")
             instructor_voice_pp = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_pp")
 
             st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
@@ -1502,7 +1504,7 @@ elif page == "generate":
                         selected_voice_id = VOICE_MAP[instructor_voice_pp]
                         _start_process(run_personalized_primer,
                                        (course, level, topics, qa_pairs, el_k, selected_voice_id, _get_llm_key(),
-                                        pp_scribble, pp_animation))
+                                        pp_scribble, pp_animation, max_videos))
                         st.rerun()
 
     # ── Document Video (Generic) ───────────────────────────────────────────────
@@ -1572,6 +1574,7 @@ elif page == "generate":
                       help="Animations not supported in Document pipeline")
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        doc_max_slides = st.slider("Max Slides", min_value=3, max_value=20, value=10, step=1, key="slider_max_slides_doc")
         instructor_voice_doc = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_doc")
 
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
@@ -1594,7 +1597,7 @@ elif page == "generate":
                     selected_voice_id = VOICE_MAP[instructor_voice_doc]
                     _start_process(run_document,
                                    (doc_topic, doc_content, doc_instructions,
-                                    el_k, selected_voice_id, _get_llm_key(), doc_scribble))
+                                    el_k, selected_voice_id, _get_llm_key(), doc_scribble, doc_max_slides))
                     st.rerun()
 
     # ── Generation history (persists until manually removed) ──────────────────
