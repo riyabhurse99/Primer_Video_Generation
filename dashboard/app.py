@@ -22,6 +22,163 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+
+:root {
+    --blue: #0055FF;
+    --navy: #011845;
+    --cta: #004CE5;
+    --bg: #FAFAFA;
+    --text: #0B1529;
+    --heading: #101E37;
+    --muted: #6B7280;
+    --border: #E5E7EB;
+    --panel: #F3F4F6;
+    --ice: #EEF3FF;
+}
+
+html, body, [class*="css"] {
+    font-family: 'Plus Jakarta Sans', -apple-system, sans-serif !important;
+    background-color: var(--bg) !important;
+    color: var(--text);
+}
+
+/* Hide deploy button and footer */
+.stDeployButton, footer { display: none !important; }
+
+/* ── Page title ── */
+h1 { font-size: 28px !important; font-weight: 700 !important;
+     letter-spacing: -0.5px !important; color: var(--heading) !important; }
+h2 { font-size: 20px !important; font-weight: 600 !important;
+     color: var(--heading) !important; }
+h3 { font-size: 16px !important; font-weight: 600 !important;
+     color: var(--heading) !important; }
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background: var(--navy) !important;
+    border-right: 1px solid rgba(255,255,255,0.08) !important;
+}
+[data-testid="stSidebar"] * {
+    color: rgba(255,255,255,0.85) !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+}
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+    color: #ffffff !important;
+    font-size: 16px !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.2px !important;
+}
+[data-testid="stSidebar"] .stRadio > div > label {
+    color: rgba(255,255,255,0.75) !important;
+    font-size: 13px !important;
+    padding: 6px 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+[data-testid="stSidebar"] .stRadio > div > label:has(input:checked) {
+    color: white !important;
+    font-weight: 600 !important;
+    background: transparent !important;
+}
+[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12) !important; }
+[data-testid="stSidebar"] .stSuccess,
+[data-testid="stSidebar"] .stWarning {
+    border-radius: 4px !important;
+    font-size: 12px !important;
+}
+
+/* ── Inputs ── */
+.stTextInput input, .stTextArea textarea {
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+    background: white !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-size: 14px !important;
+    color: var(--text) !important;
+    padding: 10px 14px !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04) !important;
+    transition: border-color 0.15s, box-shadow 0.15s !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus {
+    border-color: var(--blue) !important;
+    box-shadow: 0 0 0 3px rgba(0,85,255,0.12) !important;
+}
+div[data-testid="stSelectbox"] > div { border-radius: 6px !important; }
+
+/* ── Labels ── */
+label {
+    font-size: 12px !important; font-weight: 600 !important;
+    color: var(--text) !important; letter-spacing: 0.3px !important;
+}
+
+/* ── Primary buttons ── */
+.stButton > button,
+[data-testid="stBaseButton-primary"],
+[data-testid="stBaseButton-secondary"] {
+    background: var(--blue) !important; color: white !important;
+    border: none !important; border-radius: 6px !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-size: 12px !important; font-weight: 600 !important;
+    letter-spacing: 0.8px !important; text-transform: uppercase !important;
+    padding: 8px 20px !important; height: auto !important;
+    box-shadow: 0 1px 3px rgba(0,85,255,0.25) !important;
+    transition: background 0.15s, box-shadow 0.15s, transform 0.1s !important;
+}
+.stButton > button:hover,
+[data-testid="stBaseButton-primary"]:hover,
+[data-testid="stBaseButton-secondary"]:hover {
+    background: var(--cta) !important;
+    box-shadow: 0 3px 8px rgba(0,85,255,0.3) !important;
+    transform: translateY(-1px) !important;
+}
+.stDownloadButton > button {
+    background: transparent !important; color: var(--blue) !important;
+    border: 1.5px solid var(--blue) !important; border-radius: 6px !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-size: 11px !important; font-weight: 600 !important;
+    letter-spacing: 0.8px !important; text-transform: uppercase !important;
+    padding: 7px 20px !important; transition: all 0.15s !important;
+}
+.stDownloadButton > button:hover {
+    background: var(--blue) !important; color: white !important;
+}
+
+/* ── Toggle / checkbox labels (light bg — dark text) ── */
+[data-testid="stToggle"] p, [data-testid="stToggle"] span, [data-testid="stToggle"] label,
+[data-testid="stCheckbox"] p, [data-testid="stCheckbox"] span, [data-testid="stCheckbox"] label,
+.stToggle p, .stToggle label, .stCheckbox p, .stCheckbox label {
+    font-size: 13px !important; font-weight: 500 !important;
+    color: var(--text) !important; background: transparent !important;
+}
+
+/* ── Tabs ── */
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-size: 13px !important; font-weight: 500 !important;
+}
+
+/* ── Metrics ── */
+[data-testid="stMetric"] label {
+    font-size: 11px !important; font-weight: 700 !important;
+    letter-spacing: 1px !important; text-transform: uppercase !important;
+    color: var(--muted) !important;
+}
+[data-testid="stMetricValue"] {
+    font-size: 28px !important; font-weight: 700 !important;
+    color: var(--heading) !important;
+}
+
+/* ── Dividers ── */
+hr { border-color: var(--border) !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
 from config.settings import USE_MOCKS, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES, TTS_BACKEND, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 
 
@@ -89,6 +246,12 @@ if page == "Generate Video":
         key="dv_topic"
     )
 
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        app_scribble = st.toggle("Pen Annotations (Scribble)", value=False, key="app_scribble")
+    with ac2:
+        app_animation = st.toggle("Animations (Manim)", value=False, key="app_animation", disabled=True, help="Temporarily disabled")
+
     if st.button("Generate Video", type="primary", key="dv_run"):
         if not topic.strip():
             st.error("Please enter a topic.")
@@ -146,7 +309,7 @@ if page == "Generate Video":
             os.makedirs(OUTPUT_DIR, exist_ok=True)
 
             with st.spinner(f"Generating video for '{topic}'... this takes a minute."):
-                video_path = pipeline.run(topic)
+                video_path = pipeline.run(topic, scribble=app_scribble, animation=app_animation)
 
             if video_path and os.path.exists(video_path):
                 st.success(f"Video ready!")
@@ -199,6 +362,8 @@ elif page == "Generate from Document":
         key="doc_approach",
         placeholder="Paste the approach / methodology document here...",
     )
+
+    doc_scribble = st.toggle("Pen Annotations (Scribble)", value=False, key="doc_scribble")
 
     if st.button("Generate Document Video", type="primary", key="doc_run"):
         if not problem_statement.strip() or not approach_document.strip():
@@ -262,6 +427,7 @@ elif page == "Generate from Document":
                         problem_statement=problem_statement,
                         dataset_description=dataset_description or "(No dataset description provided)",
                         approach_document=approach_document,
+                        scribble=doc_scribble,
                     )
 
                 if video_path and os.path.exists(video_path):

@@ -39,7 +39,7 @@ class DirectPipeline:
         self.output_dir = output_dir
         self.call_llm = call_llm  # Optional: (prompt: str) -> str. None = evals skipped.
 
-    def run(self, topic: str, level: str = None) -> str:
+    def run(self, topic: str, level: str = None, scribble: bool = False, animation: bool = False) -> str:
         """Generates a video for the given topic. Returns the stored video path."""
         logger.info(f"=== Direct Pipeline START — topic='{topic}' level={level or 'generic'} ===")
         pipeline_start = time.time()
@@ -104,7 +104,7 @@ class DirectPipeline:
             # inserted right after the slide it relates to.
             MAX_ANIMATIONS = 1  # max 1 animation per video to keep it focused
             animation_clips = {}  # slide_index → (mp4_path, anim_spec)
-            if self.call_llm:
+            if self.call_llm and animation:
                 anim_dir = os.path.join(video_temp_dir, "animations")
                 os.makedirs(anim_dir, exist_ok=True)
 
@@ -141,7 +141,7 @@ class DirectPipeline:
                     self.tts.generate_audio(narration_text, audio_path)
                     audio_paths.append(audio_path)
                     paired_images.append(image)
-                    annotation_mask.append(True)  # normal slides get scribble
+                    annotation_mask.append(scribble)  # controlled by scribble flag
 
                     # If this slide has an animation, generate narration for the animation
                     if i in animation_clips:
@@ -162,7 +162,7 @@ class DirectPipeline:
 
             # Step 4: Save to output folder
             with StepTimer() as storage_timer:
-                stored_path = self.storage.save(final_video_path, f"direct/{safe_topic}.mp4")
+                stored_path = self.storage.save(final_video_path, f"{safe_topic}.mp4")
 
             # Measure video duration and size
             video_size_mb = os.path.getsize(stored_path) / (1024 * 1024)

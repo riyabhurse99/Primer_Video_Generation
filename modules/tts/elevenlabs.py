@@ -8,6 +8,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
+ELEVENLABS_TTS_URL_BASIC = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
 
 class ElevenLabsTTS(BaseTTS):
@@ -45,7 +46,6 @@ class ElevenLabsTTS(BaseTTS):
     def generate_audio(self, text, output_path):
         logger.info(f"Generating audio via ElevenLabs — chars={len(text)}")
 
-        url = ELEVENLABS_TTS_URL.format(voice_id=self.voice_id)
         payload = {
             "text": text,
             "model_id": "eleven_multilingual_v2",
@@ -58,9 +58,21 @@ class ElevenLabsTTS(BaseTTS):
             },
         }
 
+        # Try with-timestamps endpoint first; fall back to basic if not available
+        url = ELEVENLABS_TTS_URL.format(voice_id=self.voice_id)
         response = requests.post(url, headers=self.headers, json=payload, timeout=60)
-        response.raise_for_status()
 
+        if response.status_code == 401:
+            logger.warning("with-timestamps endpoint returned 401 — falling back to basic TTS endpoint")
+            url = ELEVENLABS_TTS_URL_BASIC.format(voice_id=self.voice_id)
+            response = requests.post(url, headers=self.headers, json=payload, timeout=60)
+            response.raise_for_status()
+            with open(output_path, "wb") as f:
+                f.write(response.content)
+            logger.info(f"Audio saved (no timestamps): {output_path}")
+            return output_path
+
+        response.raise_for_status()
         data = response.json()
 
         # Decode and save audio (returned as base64)
@@ -72,7 +84,6 @@ class ElevenLabsTTS(BaseTTS):
         alignment = data.get("alignment")
         if alignment:
             ts_path = os.path.splitext(output_path)[0] + ".timestamps.json"
-            # Build word-level timing from character-level data
             words = _chars_to_words(alignment)
             with open(ts_path, "w") as f:
                 json.dump(words, f)

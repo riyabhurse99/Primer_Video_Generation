@@ -36,7 +36,7 @@ class DynamicPrimerPipeline:
         self.temp_dir = temp_dir
         self.output_dir = output_dir
 
-    def _generate_single_video(self, video_script: VideoScript, context: str) -> str:
+    def _generate_single_video(self, video_script: VideoScript, context: str, scribble: bool = False) -> str:
         """Runs the full pipeline for one video. Returns final video path."""
         safe_topic = video_script.topic.replace(" ", "_").replace("/", "-")[:50]
         video_temp_dir = os.path.join(self.temp_dir, safe_topic)
@@ -97,13 +97,15 @@ class DynamicPrimerPipeline:
 
         # Step 4: Assemble video
         final_video_path = os.path.join(video_temp_dir, f"{safe_topic}.mp4")
-        self.video_assembler.assemble(paired_images, audio_paths, final_video_path)
+        annotation_mask = [scribble] * len(paired_images)
+        self.video_assembler.assemble(paired_images, audio_paths, final_video_path,
+                                      annotation_mask=annotation_mask)
 
         # Step 5: Save to storage
         stored_path = self.storage.save(final_video_path, f"{context}/{safe_topic}.mp4")
         return stored_path
 
-    def run(self, input: QuestionnaireInput, student_id: str) -> PrimerOutput:
+    def run(self, input: QuestionnaireInput, student_id: str, scribble: bool = False, animation: bool = False) -> PrimerOutput:
         logger.info(f"=== Dynamic Primer Pipeline START — student={student_id}, course={input.course} ===")
 
         # Step 1: Generate personalized plan from questionnaire answers
@@ -117,8 +119,8 @@ class DynamicPrimerPipeline:
             for video_script in section.videos:
                 logger.info(f"  Generating video: {video_script.topic}")
                 try:
-                    context = f"dynamic/{input.course}/{student_id}/{section.name}"
-                    video_path = self._generate_single_video(video_script, context)
+                    context = section.name
+                    video_path = self._generate_single_video(video_script, context, scribble=scribble)
                     generated_videos.append(GeneratedVideo(
                         section=section.name,
                         topic=video_script.topic,

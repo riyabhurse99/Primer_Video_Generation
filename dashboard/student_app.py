@@ -5,10 +5,17 @@ Production-ready student-facing dashboard for the Scaler Primer AI system.
 Run with: streamlit run dashboard/student_app.py
 """
 
+from PIL import ImageColor
 import sys
 import os
 import json
 import time as _time
+import multiprocessing
+
+# Must be set before any multiprocessing usage.
+# "fork" avoids re-importing this Streamlit module in child processes (macOS default is "spawn").
+if sys.platform == "darwin":
+    multiprocessing.set_start_method("fork", force=True)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -109,6 +116,114 @@ def _video_duration_str(path: str) -> str:
         return ""
 
 
+def _get_llm_key():
+    try:
+        return st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        from config.settings import ANTHROPIC_API_KEY
+        return ANTHROPIC_API_KEY
+
+
+def _cancel_generation():
+    """Kill the running generation process and clean up."""
+    proc = st.session_state.get("gen_process")
+    if proc and proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=3)
+        if proc.is_alive():
+            proc.kill()
+    st.session_state.gen_process = None
+    st.session_state.gen_result_path = None
+    st.session_state.gen_progress_path = None
+
+
+def _start_process(target, args):
+    """Start a background process and store it in session state."""
+    import multiprocessing, tempfile
+    result_file = tempfile.mktemp(suffix=".json")
+    progress_file = tempfile.mktemp(suffix=".json")
+    p = multiprocessing.Process(target=target, args=args + (result_file, progress_file), daemon=True)
+    p.start()
+    st.session_state.gen_process = p
+    st.session_state.gen_result_path = result_file
+    st.session_state.gen_progress_path = progress_file
+
+
+def _read_progress() -> dict:
+    path = st.session_state.get("gen_progress_path")
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _read_result() -> dict | None:
+    """Read and consume the result file once process is done."""
+    path = st.session_state.get("gen_result_path")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        os.remove(path)
+        return data
+    except Exception:
+        return None
+
+
+def _show_generation_status(label: str):
+    """
+    Show animated status while a background process is running.
+    Returns True if still running, False if done/cancelled.
+    """
+    proc = st.session_state.get("gen_process")
+    if not proc:
+        return False
+
+    if proc.is_alive():
+        progress = _read_progress()
+        step = progress.get("step", "Starting")
+        detail = progress.get("detail", "")
+
+        st.markdown(f"""
+        <div style="border-left:3px solid var(--blue);padding:20px 24px;background:var(--navy);
+                    margin-bottom:16px;border-radius:0 8px 8px 0">
+            <div style="font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;
+                        color:var(--blue);margin-bottom:6px">Generating</div>
+            <div style="font-size:16px;font-weight:600;color:#ffffff;margin-bottom:4px">{label}</div>
+            <div style="font-size:13px;color:rgba(255,255,255,0.55);margin-bottom:16px">{detail or 'Please wait…'}</div>
+            <div style="background:rgba(255,255,255,0.12);height:3px;border-radius:2px;overflow:hidden;">
+                <div style="background:var(--blue);height:3px;width:100%;
+                    animation:indeterminate 1.5s infinite linear;
+                    transform-origin:0% 50%;"></div>
+            </div>
+            <style>
+            @keyframes indeterminate {{
+                0% {{ transform: translateX(-100%) scaleX(0.5); }}
+                50% {{ transform: translateX(0%) scaleX(0.5); }}
+                100% {{ transform: translateX(200%) scaleX(0.5); }}
+            }}
+            </style>
+            <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:10px">
+                Step: <strong style="color:rgba(255,255,255,0.7)">{step}</strong>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Stop Generation", key="cancel_gen"):
+            _cancel_generation()
+            st.rerun()
+
+        _time.sleep(3)
+        st.rerun()
+        return True
+
+    return False
+
+
 def _generate_next_question(course: str, topics: list, qa_history: list) -> str | None:
     """Ask Claude to generate the next adaptive question based on course + previous answers."""
     call_llm = _get_call_llm(max_tokens=256)
@@ -137,6 +252,137 @@ Generate ONE short, specific question to understand what this student already kn
         return None
 
 
+def _append_gen_result(entry: dict):
+    """Prepend a completed generation session to gen_history."""
+    import datetime
+    entry.setdefault("timestamp", datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+    if "gen_history" not in st.session_state:
+        st.session_state.gen_history = []
+    st.session_state.gen_history.insert(0, entry)
+
+
+_TYPE_LABELS = {
+    "single": "Single Topic",
+    "primer": "Personalized Primer",
+    "document": "Case Study Document",
+}
+_TYPE_COLORS = {
+    "single": ("#E9F1FF", "#0055FF"),
+    "primer": ("#011845", "#FFFFFF"),
+    "document": ("#E6F7EE", "#1A7A3C"),
+}
+
+
+def _render_gen_history(context: str = "generate"):
+    """
+    Render all generation sessions from gen_history as stacked cards.
+    context: 'generate' (full detail) or 'dashboard' (compact summary).
+    """
+    history = st.session_state.get("gen_history", [])
+    if not history:
+        return
+
+    st.markdown("<div class='s-spacer'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="s-h2">Generation Results</div>', unsafe_allow_html=True)
+
+    for idx, entry in enumerate(history):
+        gtype = entry.get("type", "single")
+        topic = entry.get("topic", "—")
+        ts = entry.get("timestamp", "")
+        videos = entry.get("videos", [])
+        sections = entry.get("sections")
+
+        type_label = _TYPE_LABELS.get(gtype, gtype.title())
+        bg_color, text_color = _TYPE_COLORS.get(gtype, ("#F6F6F6", "#101E37"))
+
+        # ── Session header ────────────────────────────────────────────────────
+        st.markdown(f"""
+        <div style="border:1px solid var(--border);background:white;margin-bottom:4px">
+            <div style="display:flex;align-items:center;gap:14px;
+                        padding:16px 20px;border-bottom:1px solid var(--border-light)">
+                <div style="background:{bg_color};color:{text_color};
+                            font-size:10px;font-weight:700;letter-spacing:1.2px;
+                            text-transform:uppercase;padding:4px 12px;flex-shrink:0">
+                    {type_label}
+                </div>
+                <div style="flex:1">
+                    <div style="font-size:15px;font-weight:600;color:var(--heading);
+                                letter-spacing:-0.2px">{topic}</div>
+                    <div style="font-size:11px;color:var(--muted);margin-top:2px">
+                        {len(videos)} video{'s' if len(videos) != 1 else ''} &middot; {ts}
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        # ── Video list ────────────────────────────────────────────────────────
+        if sections:
+            # Grouped by section (Personalized Primer)
+            for section_name, svids in sections.items():
+                st.markdown(f"""
+                <div style="padding:10px 20px 4px 20px;background:var(--panel);
+                            font-size:10px;font-weight:700;letter-spacing:1.5px;
+                            text-transform:uppercase;color:var(--muted)">
+                    {section_name}
+                </div>
+                """, unsafe_allow_html=True)
+                for vi, vid in enumerate(svids):
+                    _render_video_row(vid, f"{context}_{idx}_s{vi}", show_player=(context == "generate"))
+        else:
+            for vi, vid in enumerate(videos):
+                _render_video_row(vid, f"{context}_{idx}_v{vi}", show_player=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Remove button ─────────────────────────────────────────────────────
+        if st.button("Remove this result", key=f"rm_{context}_{idx}"):
+            st.session_state.gen_history.pop(idx)
+            st.rerun()
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+
+def _render_video_row(vid: dict, key: str, show_player: bool = True):
+    """Render one video row with optional inline player."""
+    path = vid.get("path", "")
+    vtopic = vid.get("topic", os.path.basename(path))
+    section = vid.get("section", "")
+
+    exists = path and os.path.exists(path)
+    dur = _video_duration_str(path) if exists else ""
+    size_str = f"{os.path.getsize(path) / (1024*1024):.1f} MB" if exists else ""
+
+    meta_parts = [p for p in [dur, size_str, "AI Generated"] if p]
+    meta_str = " · ".join(meta_parts)
+
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:14px;padding:12px 20px;
+                border-bottom:1px solid var(--border-light)">
+        <div style="width:32px;height:32px;background:var(--ice);border:1px solid var(--border-light);
+                    display:flex;align-items:center;justify-content:center;
+                    color:var(--blue);font-size:12px;flex-shrink:0">&#9654;</div>
+        <div style="flex:1">
+            <div style="font-size:13px;font-weight:600;color:var(--heading)">{vtopic}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:1px">{meta_str}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if exists and show_player:
+        with st.expander(f"Watch: {vtopic}", expanded=False):
+            with open(path, "rb") as f:
+                st.video(f.read())
+            col_dl, _ = st.columns([1, 3])
+            with col_dl:
+                with open(path, "rb") as f:
+                    st.download_button(
+                        "Download MP4", f.read(),
+                        file_name=os.path.basename(path),
+                        mime="video/mp4",
+                        key=f"dl_{key}",
+                    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SESSION STATE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -144,8 +390,10 @@ if "page" not in st.session_state:
     st.session_state.page = "dashboard"
 if "play_video" not in st.session_state:
     st.session_state.play_video = None
-if "last_gen_result" not in st.session_state:
-    st.session_state.last_gen_result = None
+if "gen_history" not in st.session_state:
+    st.session_state.gen_history = []  # list of completed generation sessions, newest first
+if "gen_mode" not in st.session_state:
+    st.session_state.gen_mode = "Single Topic"
 if "qa_step" not in st.session_state:
     st.session_state.qa_step = 0
 if "qa_questions" not in st.session_state:
@@ -160,6 +408,16 @@ if "qa_topics" not in st.session_state:
     st.session_state.qa_topics = []
 if "qa_error" not in st.session_state:
     st.session_state.qa_error = None
+if "gen_scribble" not in st.session_state:
+    st.session_state.gen_scribble = False
+if "gen_animation" not in st.session_state:
+    st.session_state.gen_animation = False
+if "gen_process" not in st.session_state:
+    st.session_state.gen_process = None
+if "gen_result_path" not in st.session_state:
+    st.session_state.gen_result_path = None
+if "gen_progress_path" not in st.session_state:
+    st.session_state.gen_progress_path = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -173,15 +431,18 @@ st.markdown("""
     --blue: #0055FF;
     --navy: #011845;
     --cta: #004CE5;
-    --bg: #FCFCFC;
+    --bg: #FAFAFA;
     --text: #0B1529;
     --heading: #101E37;
-    --muted: #696969;
-    --light-muted: #848484;
-    --panel: #F6F6F6;
-    --ice: #E9F1FF;
-    --border: #CAC0C0;
-    --border-light: #D1D1D1;
+    --muted: #6B7280;
+    --light-muted: #9CA3AF;
+    --panel: #F3F4F6;
+    --ice: #EEF3FF;
+    --border: #E5E7EB;
+    --border-light: #F0F0F0;
+    --success: #059669;
+    --error-bg: #FEF2F2;
+    --error: #DC2626;
 }
 
 html, body, [class*="css"] {
@@ -209,30 +470,31 @@ html, body, [class*="css"] {
 
 /* ── Eyebrow + Heading ── */
 .s-eyebrow {
-    font-size: 11px; font-weight: 600;
+    font-size: 10px; font-weight: 700;
     letter-spacing: 2.5px; text-transform: uppercase;
-    color: var(--light-muted);
-    margin: 0 0 8px 0;
+    color: var(--blue);
+    margin: 0 0 10px 0;
 }
 .s-h1 {
-    font-size: 36px; font-weight: 700;
+    font-size: 34px; font-weight: 700;
     color: var(--heading);
-    letter-spacing: -0.8px; line-height: 1.15;
+    letter-spacing: -0.8px; line-height: 1.18;
     margin: 0 0 8px 0;
 }
 .s-h1 b { color: var(--blue); font-weight: 700; }
 .s-h2 {
-    font-size: 13px; font-weight: 600;
+    font-size: 11px; font-weight: 700;
     letter-spacing: 2px; text-transform: uppercase;
-    color: var(--text);
-    padding-bottom: 14px;
-    border-bottom: 1px solid var(--border-light);
+    color: var(--muted);
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
     margin: 0 0 20px 0;
 }
 .s-subtitle {
     font-size: 15px;
     color: var(--muted);
-    letter-spacing: -0.2px;
+    letter-spacing: -0.1px;
+    line-height: 1.6;
     margin: 0;
 }
 
@@ -414,23 +676,30 @@ html, body, [class*="css"] {
     background: white;
     padding: 40px 48px;
     margin-bottom: 32px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+/* Section heading */
+.s-section-head {
+    padding: 24px 0 18px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
 }
 .s-form-title {
     font-size: 20px; font-weight: 700;
     color: var(--heading);
-    letter-spacing: -0.3px;
-    margin: 0 0 4px 0;
+    letter-spacing: -0.4px;
+    margin: 0 0 6px 0;
 }
 .s-form-desc {
     font-size: 14px; color: var(--muted);
-    letter-spacing: -0.2px;
-    margin: 0 0 28px 0;
+    line-height: 1.55;
+    margin: 0;
 }
-.s-divider { height: 1px; background: var(--border-light); margin: 24px 0; }
+.s-divider { height: 1px; background: var(--border); margin: 20px 0; }
 .s-form-label {
-    font-size: 12px; font-weight: 600;
-    letter-spacing: 1px; text-transform: uppercase;
-    color: var(--text); margin-bottom: 8px;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 1.2px; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px;
 }
 
 /* ── Player ── */
@@ -452,28 +721,33 @@ html, body, [class*="css"] {
 }
 .s-player-sub { font-size: 12px; color: var(--muted); }
 
-/* ── Info banner ── */
+/* ── Info / success / error banners ── */
 .s-info {
     background: var(--ice);
     border-left: 3px solid var(--blue);
-    padding: 14px 20px;
+    padding: 12px 18px;
     font-size: 13px; color: var(--text);
-    letter-spacing: -0.2px;
-    margin-bottom: 20px;
+    line-height: 1.5;
+    margin-bottom: 16px;
+    border-radius: 0 4px 4px 0;
 }
 .s-success {
-    background: #E6F7EE;
-    border-left: 3px solid #1A7A3C;
-    padding: 14px 20px;
+    background: #ECFDF5;
+    border-left: 3px solid var(--success);
+    padding: 12px 18px;
     font-size: 13px; color: var(--text);
-    margin-bottom: 20px;
+    line-height: 1.5;
+    margin-bottom: 16px;
+    border-radius: 0 4px 4px 0;
 }
 .s-error {
-    background: #FEF2F2;
-    border-left: 3px solid #DC2626;
-    padding: 14px 20px;
+    background: var(--error-bg);
+    border-left: 3px solid var(--error);
+    padding: 12px 18px;
     font-size: 13px; color: var(--text);
-    margin-bottom: 20px;
+    line-height: 1.5;
+    margin-bottom: 16px;
+    border-radius: 0 4px 4px 0;
 }
 
 /* ── Empty state ── */
@@ -488,67 +762,89 @@ html, body, [class*="css"] {
 /* ── Overrides ── */
 .stTextInput input, .stTextArea textarea {
     border: 1px solid var(--border) !important;
-    border-radius: 0 !important;
-    background: var(--bg) !important;
+    border-radius: 6px !important;
+    background: white !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
     font-size: 14px !important;
     color: var(--text) !important;
     padding: 10px 14px !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04) !important;
+    transition: border-color 0.15s, box-shadow 0.15s !important;
 }
 .stTextInput input:focus, .stTextArea textarea:focus {
     border-color: var(--blue) !important;
-    box-shadow: 0 0 0 1px var(--blue) !important;
+    box-shadow: 0 0 0 3px rgba(0,85,255,0.12) !important;
 }
 div[data-testid="stSelectbox"] > div {
-    border-radius: 0 !important;
+    border-radius: 6px !important;
 }
 .stButton > button,
 .stButton button,
 [data-testid="stBaseButton-primary"],
 [data-testid="stBaseButton-secondary"] {
     background: var(--blue) !important; color: white !important;
-    border: none !important; border-radius: 0 !important;
+    border: none !important; border-radius: 6px !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
     font-size: 12px !important; font-weight: 600 !important;
-    letter-spacing: 1px !important; text-transform: uppercase !important;
-    padding: 7px 20px !important; height: auto !important; min-height: 0 !important;
+    letter-spacing: 0.8px !important; text-transform: uppercase !important;
+    padding: 8px 20px !important; height: auto !important; min-height: 0 !important;
     line-height: 1.4 !important;
-    transition: background 0.15s !important;
+    transition: background 0.15s, transform 0.1s, box-shadow 0.15s !important;
+    box-shadow: 0 1px 3px rgba(0,85,255,0.25) !important;
 }
 .stButton > button:hover,
 .stButton button:hover,
 [data-testid="stBaseButton-primary"]:hover,
-[data-testid="stBaseButton-secondary"]:hover { background: var(--cta) !important; }
+[data-testid="stBaseButton-secondary"]:hover {
+    background: var(--cta) !important;
+    box-shadow: 0 3px 8px rgba(0,85,255,0.3) !important;
+    transform: translateY(-1px) !important;
+}
+.stButton > button:active,
+.stButton button:active {
+    transform: translateY(0) !important;
+    box-shadow: 0 1px 3px rgba(0,85,255,0.2) !important;
+}
 .stDownloadButton > button {
     background: transparent !important; color: var(--blue) !important;
-    border: 1px solid var(--blue) !important; border-radius: 0 !important;
+    border: 1.5px solid var(--blue) !important; border-radius: 6px !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
     font-size: 11px !important; font-weight: 600 !important;
-    letter-spacing: 1px !important; text-transform: uppercase !important;
+    letter-spacing: 0.8px !important; text-transform: uppercase !important;
     padding: 7px 20px !important; height: auto !important; min-height: 0 !important;
+    transition: all 0.15s !important;
 }
 .stDownloadButton > button:hover {
     background: var(--blue) !important; color: white !important;
+    box-shadow: 0 2px 6px rgba(0,85,255,0.25) !important;
 }
-label { font-size: 12px !important; font-weight: 600 !important; color: var(--text) !important; letter-spacing: 0.5px !important; }
+label { font-size: 12px !important; font-weight: 600 !important; color: var(--text) !important; letter-spacing: 0.3px !important; }
 h1, h2, h3 { font-family: 'Plus Jakarta Sans', sans-serif !important; color: var(--heading) !important; }
 .stRadio > div { gap: 0 !important; }
 .stRadio label { font-weight: 500 !important; }
 
 /* ── Footer ── */
 .s-footer {
-    border-top: 1px solid var(--border-light);
-    padding: 20px 0;
+    border-top: 1px solid var(--border);
+    padding: 24px 0;
     text-align: center;
-    margin-top: 60px;
+    margin-top: 80px;
 }
 .s-footer span {
-    font-size: 11px; color: var(--light-muted);
-    letter-spacing: 1.5px; text-transform: uppercase;
+    font-size: 10px; color: var(--light-muted);
+    letter-spacing: 2px; text-transform: uppercase;
 }
 
-/* ── Nav row (first stHorizontalBlock on the page) ── */
-div[data-testid="stHorizontalBlock"]:first-of-type {
+/* ── Nav row ── */
+/* Nav columns are a DIRECT child of the outermost stVerticalBlock (depth 1).
+   Page content columns are inside a nested stVerticalBlock created by Streamlit
+   for each if/elif branch (depth 2+). We exploit this depth difference:
+   the high-specificity reset rule (3 attr selectors) overrides the nav rule
+   (1 attr + 1 pseudo-class) for any stHorizontalBlock inside a nested
+   stVerticalBlock, leaving only the true nav styled.                         */
+
+/* 1 — nav styling (matches first stHorizontalBlock at depth 1) */
+[data-testid="stHorizontalBlock"]:first-of-type {
     background: var(--navy) !important;
     margin: 0 -1rem !important;
     padding: 0 24px !important;
@@ -557,15 +853,61 @@ div[data-testid="stHorizontalBlock"]:first-of-type {
     min-height: 60px !important;
     align-items: center !important;
 }
-div[data-testid="stHorizontalBlock"]:first-of-type > div {
+[data-testid="stHorizontalBlock"]:first-of-type > div {
     padding: 0 !important;
     display: flex !important;
     align-items: center !important;
 }
-div[data-testid="stHorizontalBlock"]:first-of-type .stButton > button,
-div[data-testid="stHorizontalBlock"]:first-of-type .stButton button,
-div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-secondary"],
-div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-primary"] {
+
+/* 2 — reset: any stHorizontalBlock nested inside 2+ stVerticalBlocks
+   (higher specificity → wins over the nav rule for page content columns) */
+[data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] [data-testid="stHorizontalBlock"] {
+    background: transparent !important;
+    border-bottom: none !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    gap: 1rem !important;
+    align-items: stretch !important;
+}
+[data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] [data-testid="stHorizontalBlock"] > div {
+    padding: revert !important;
+    display: revert !important;
+    align-items: revert !important;
+}
+/* restore normal button styles inside page content columns */
+[data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] [data-testid="stHorizontalBlock"] .stButton > button,
+[data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] [data-testid="stHorizontalBlock"] .stButton button,
+[data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] [data-testid="stHorizontalBlock"] [data-testid="stBaseButton-primary"],
+[data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] [data-testid="stHorizontalBlock"] [data-testid="stBaseButton-secondary"] {
+    background: var(--blue) !important;
+    color: white !important;
+    border: none !important;
+    border-bottom: none !important;
+    border-radius: 0 !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 1px !important;
+    text-transform: uppercase !important;
+    padding: 7px 20px !important;
+    height: auto !important;
+    min-height: 0 !important;
+    width: auto !important;
+    white-space: nowrap !important;
+    transition: background 0.15s !important;
+}
+[data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] [data-testid="stHorizontalBlock"] .stButton > button:hover,
+[data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] [data-testid="stHorizontalBlock"] .stButton button:hover {
+    background: var(--cta) !important;
+    color: white !important;
+}
+
+/* 3 — nav button styles (applied only to the true nav bar) */
+[data-testid="stHorizontalBlock"]:first-of-type .stButton > button,
+[data-testid="stHorizontalBlock"]:first-of-type .stButton button,
+[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-secondary"],
+[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-primary"] {
     background: transparent !important;
     color: rgba(255,255,255,0.65) !important;
     border: none !important;
@@ -581,12 +923,103 @@ div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-pr
     white-space: nowrap !important;
     transition: color 0.15s !important;
 }
-div[data-testid="stHorizontalBlock"]:first-of-type .stButton > button:hover,
-div[data-testid="stHorizontalBlock"]:first-of-type .stButton button:hover,
-div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-secondary"]:hover,
-div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-primary"]:hover {
+[data-testid="stHorizontalBlock"]:first-of-type .stButton > button:hover,
+[data-testid="stHorizontalBlock"]:first-of-type .stButton button:hover,
+[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-secondary"]:hover,
+[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stBaseButton-primary"]:hover {
     color: white !important;
     background: transparent !important;
+}
+
+/* ── Radio (library filter — keep default look, just clean up) ── */
+.stRadio > div { gap: 8px !important; }
+.stRadio > div > label {
+    padding: 6px 14px !important;
+    border: 1px solid var(--border) !important;
+    background: var(--panel) !important;
+    color: var(--text) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+}
+.stRadio > div > label:has(input:checked) {
+    background: var(--blue) !important;
+    color: white !important;
+    border-color: var(--blue) !important;
+}
+
+/* ── Mode selector buttons ── */
+.s-mode-btn > button,
+.s-mode-btn .stButton > button,
+.s-mode-btn [data-testid="stBaseButton-secondary"] {
+    background: var(--panel) !important;
+    color: var(--muted) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 0 !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.8px !important;
+    text-transform: uppercase !important;
+    padding: 12px 16px !important;
+    height: auto !important;
+    width: 100% !important;
+    transition: all 0.15s !important;
+}
+.s-mode-btn > button:hover,
+.s-mode-btn .stButton > button:hover {
+    background: var(--ice) !important;
+    color: var(--blue) !important;
+    border-color: var(--blue) !important;
+}
+.s-mode-btn-active > button,
+.s-mode-btn-active .stButton > button,
+.s-mode-btn-active [data-testid="stBaseButton-secondary"] {
+    background: var(--blue) !important;
+    color: white !important;
+    border: 1px solid var(--blue) !important;
+}
+
+/* ── Toggle switch — always white (all toggles in student_app live in dark navy panels) ── */
+[data-testid="stToggle"],
+[data-testid="stCheckbox"] { margin: 0 !important; }
+[data-testid="stToggle"] p,
+[data-testid="stToggle"] span,
+[data-testid="stToggle"] label,
+[data-testid="stToggle"] div > p,
+[data-testid="stCheckbox"] p,
+[data-testid="stCheckbox"] span,
+[data-testid="stCheckbox"] label,
+[data-testid="stCheckbox"] div > p,
+.stToggle p,
+.stToggle label,
+.stCheckbox p,
+.stCheckbox label {
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    color: #ffffff !important;
+    background: transparent !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+}
+
+/* ── Video options panel ── */
+.s-video-options {
+    background: var(--navy);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-left: 3px solid var(--blue);
+    border-radius: 8px;
+    padding: 14px 20px 14px 20px;
+    margin: 16px 0 4px 0;
+}
+.s-video-options-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.4);
+    margin-bottom: 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    padding-bottom: 8px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -603,7 +1036,28 @@ with open(os.path.join(PROJECT_ROOT, "assets", "logo_white.png"), "rb") as _lf:
 # CSS targets div[data-testid="stHorizontalBlock"]:first-of-type to style
 # the whole row as the navy bar without any :has() hacks.
 _pg = st.session_state.page
-_nc_logo, _nc_sp, _nc1, _nc2, _nc3 = st.columns([2, 4, 1, 1, 1])
+_nc_logo, _nc_sp, _nc1, _nc2, _nc3, _nc4 = st.columns([2, 3, 1, 1, 1, 1])
+
+# Inject active-state highlight for whichever nav button matches current page
+_nav_label_map = {
+    "dashboard": "Dashboard", "generate": "Generate",
+    "library": "Library", "metrics": "Metrics"
+}
+_active_nav_label = _nav_label_map.get(_pg, "Dashboard")
+st.markdown(f"""
+<style>
+[data-testid="stBaseButton-secondary"][aria-label="Dashboard"],
+[data-testid="stBaseButton-secondary"][aria-label="Generate"],
+[data-testid="stBaseButton-secondary"][aria-label="Library"],
+[data-testid="stBaseButton-secondary"][aria-label="Metrics"] {{
+    border-bottom: 3px solid transparent !important;
+}}
+[data-testid="stBaseButton-secondary"][aria-label="{_active_nav_label}"] {{
+    color: white !important;
+    border-bottom: 3px solid var(--blue) !important;
+}}
+</style>
+""", unsafe_allow_html=True)
 with _nc_logo:
     st.markdown(
         f'<img src="data:image/png;base64,{_logo_b64}" class="s-nav-logo" alt="Scaler" '
@@ -621,6 +1075,10 @@ with _nc2:
 with _nc3:
     if st.button("Library", key="_nav3", use_container_width=True):
         st.session_state.page = "library"
+        st.rerun()
+with _nc4:
+    if st.button("Metrics", key="_nav4", use_container_width=True):
+        st.session_state.page = "metrics"
         st.rerun()
 
 st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
@@ -642,32 +1100,10 @@ if page == "dashboard":
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Recent videos ──
-    if all_videos:
-        st.markdown("<div class='s-spacer'></div>", unsafe_allow_html=True)
-        st.markdown('<div class="s-h2">Recently Generated</div>', unsafe_allow_html=True)
-
-        cols = st.columns(3)
-        for i, vid in enumerate(all_videos[:6]):
-            with cols[i % 3]:
-                dur = _video_duration_str(vid["path"])
-                st.markdown(f"""
-                <div class="s-vcard">
-                    <div class="s-vcard-thumb">
-                        <div class="s-vcard-play">&#9654;</div>
-                        {'<div class="s-vcard-dur">' + dur + '</div>' if dur else ''}
-                    </div>
-                    <div class="s-vcard-body">
-                        <div class="s-vcard-cat">{vid['category'].upper()}</div>
-                        <div class="s-vcard-title">{vid['name']}</div>
-                        <div class="s-vcard-meta">{vid['size_mb']:.1f} MB &middot; AI Generated</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                if st.button("Watch", key=f"dw_{i}"):
-                    st.session_state.play_video = vid
-                    st.session_state.page = "library"
-                    st.rerun()
+    # ── Generation session history ─────────────────────────────────────────────
+    history = st.session_state.get("gen_history", [])
+    if history:
+        _render_gen_history(context="dashboard")
     else:
         st.markdown("<div class='s-spacer'></div>", unsafe_allow_html=True)
         st.markdown("""
@@ -690,26 +1126,78 @@ elif page == "generate":
     st.markdown("""
     <div class="s-eyebrow">AI-Powered Learning</div>
     <div class="s-h1">Generate Your <b>Primer</b></div>
-    <p class="s-subtitle">Our AI builds personalized video lectures tailored to your exact learning needs.</p>
+    <p class="s-subtitle">Choose a generation mode below to get started.</p>
     """, unsafe_allow_html=True)
     st.markdown("<div class='s-spacer-sm'></div>", unsafe_allow_html=True)
 
-    gen_mode = st.radio(
-        "mode",
-        ["Single Topic", "Personalized Primer", "Case Study Document"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="gen_mode_radio",
-    )
+    # ── 3 mode selector buttons ───────────────────────────────────────────────
+    gen_mode = st.session_state.gen_mode
 
-    st.markdown("<div class='s-spacer-sm'></div>", unsafe_allow_html=True)
+    # Inline style per mode button — inject a scoped style block using unique key IDs
+    # Streamlit renders button keys into the DOM via aria labels we can use
+    st.markdown(f"""
+    <style>
+    /* Mode selector row: all 3 buttons inherit base tab style */
+    [data-testid="stBaseButton-secondary"][aria-label="Single Topic"],
+    [data-testid="stBaseButton-secondary"][aria-label="Personalized Primer"],
+    [data-testid="stBaseButton-secondary"][aria-label="Case Study Document"],
+    button[kind="secondary"]:is([aria-label="Single Topic"],
+                               [aria-label="Personalized Primer"],
+                               [aria-label="Case Study Document"]) {{
+        border-radius: 0 !important;
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        letter-spacing: 1px !important;
+        text-transform: uppercase !important;
+        padding: 13px 10px !important;
+        height: auto !important;
+        width: 100% !important;
+        border: 1px solid var(--border) !important;
+        background: var(--panel) !important;
+        color: var(--muted) !important;
+        transition: all 0.15s !important;
+    }}
+    /* Active mode button */
+    [data-testid="stBaseButton-secondary"][aria-label="{gen_mode}"],
+    button[kind="secondary"][aria-label="{gen_mode}"] {{
+        background: var(--blue) !important;
+        color: white !important;
+        border-color: var(--blue) !important;
+    }}
+    /* Hover on inactive */
+    [data-testid="stBaseButton-secondary"][aria-label="Single Topic"]:not([aria-label="{gen_mode}"]):hover,
+    [data-testid="stBaseButton-secondary"][aria-label="Personalized Primer"]:not([aria-label="{gen_mode}"]):hover,
+    [data-testid="stBaseButton-secondary"][aria-label="Case Study Document"]:not([aria-label="{gen_mode}"]):hover {{
+        background: var(--ice) !important;
+        color: var(--blue) !important;
+        border-color: var(--blue) !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    mc1, mc2, mc3 = st.columns(3)
+    with mc1:
+        if st.button("Single Topic", use_container_width=True, key="mode_single"):
+            st.session_state.gen_mode = "Single Topic"
+            st.rerun()
+    with mc2:
+        if st.button("Personalized Primer", use_container_width=True, key="mode_primer"):
+            st.session_state.gen_mode = "Personalized Primer"
+            st.rerun()
+    with mc3:
+        if st.button("Case Study Document", use_container_width=True, key="mode_doc"):
+            st.session_state.gen_mode = "Case Study Document"
+            st.rerun()
+
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
     # ── Single Topic ──────────────────────────────────────────────────────────
     if gen_mode == "Single Topic":
         st.markdown("""
-        <div class="s-form">
+        <div class="s-section-head">
             <div class="s-form-title">Quick Topic Video</div>
             <div class="s-form-desc">Enter any topic and get a complete lecture video with slides, narration, and AI voice.</div>
+        </div>
         """, unsafe_allow_html=True)
 
         c1, c2 = st.columns([3, 1])
@@ -718,44 +1206,52 @@ elif page == "generate":
         with c2:
             level = st.selectbox("Level", ["basic", "intermediate", "advanced"], label_visibility="collapsed")
 
+        # Check if a process just finished
+        proc = st.session_state.get("gen_process")
+        if proc and not proc.is_alive():
+            result_data = _read_result()
+            st.session_state.gen_process = None
+            if result_data and result_data.get("status") == "ok":
+                video_path = result_data["path"]
+                if video_path and os.path.exists(video_path):
+                    _append_gen_result({
+                        "type": "single", "topic": topic,
+                        "videos": [{"path": video_path, "topic": topic, "section": "Single Topic"}],
+                    })
+                    st.rerun()
+            elif result_data:
+                st.error(f"Generation failed: {result_data.get('error', 'Unknown error')}")
+
         st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
 
-        if st.button("Generate Video", type="primary", key="gen_single"):
-            if not topic.strip():
-                st.markdown('<div class="s-error">Please enter a topic.</div>', unsafe_allow_html=True)
-            else:
-                from pipelines.direct import DirectPipeline
-                from modules.groot.generator import GrootSlideGenerator
-                from modules.tts.elevenlabs import ElevenLabsTTS
-                from modules.video_assembler.ffmpeg import FFmpegVideoAssembler
-                from modules.storage.local import LocalStorage
+        # Video options panel
+        st.markdown("""
+        <div class="s-video-options">
+            <div class="s-video-options-label">Video Options</div>
+        </div>
+        """, unsafe_allow_html=True)
+        voc1, voc2 = st.columns(2)
+        with voc1:
+            scribble = st.toggle("Pen Annotations", value=st.session_state.gen_scribble, key="tog_scribble_single")
+            st.session_state.gen_scribble = scribble
+        with voc2:
+            animation = st.toggle("Animations (Manim)", value=False, key="tog_anim_single", disabled=True, help="Temporarily disabled")
+            st.session_state.gen_animation = animation
 
-                el_k, el_v = _get_el_creds()
-                pipeline = DirectPipeline(
-                    slide_generator=GrootSlideGenerator(cookies=GROOT_COOKIES),
-                    tts=ElevenLabsTTS(api_key=el_k, voice_id=el_v),
-                    video_assembler=FFmpegVideoAssembler(temp_dir=TEMP_DIR),
-                    storage=LocalStorage(base_path=OUTPUT_DIR),
-                    temp_dir=TEMP_DIR, output_dir=OUTPUT_DIR,
-                    call_llm=_get_call_llm(),
-                )
-                os.makedirs(TEMP_DIR, exist_ok=True)
-                os.makedirs(OUTPUT_DIR, exist_ok=True)
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-                with st.spinner(f"Generating primer for \"{topic}\"..."):
-                    video_path = pipeline.run(topic, level=level)
-
-                if video_path and os.path.exists(video_path):
-                    st.session_state.last_gen_result = {
-                        "type": "single",
-                        "topic": topic,
-                        "videos": [{"path": video_path, "topic": topic, "section": "Single Topic"}],
-                    }
-                    st.rerun()
+        # Show status OR generate button
+        if _show_generation_status(f'"{topic}" — Single Topic Video'):
+            pass  # rerun handled inside
+        else:
+            if st.button("Generate Video →", type="primary", key="gen_single"):
+                if not topic.strip():
+                    st.error("Please enter a topic.")
                 else:
-                    st.markdown('<div class="s-error">Generation failed. Please try again.</div>', unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
+                    from dashboard.pipeline_worker import run_single_topic
+                    el_k, el_v = _get_el_creds()
+                    _start_process(run_single_topic, (topic, level, el_k, el_v, _get_llm_key(), scribble, animation))
+                    st.rerun()
 
     # ── Personalized Primer ───────────────────────────────────────────────────
     elif gen_mode == "Personalized Primer":
@@ -770,9 +1266,10 @@ elif page == "generate":
         # ── Step 0: Course setup ──────────────────────────────────────────────
         if st.session_state.qa_step == 0:
             st.markdown("""
-            <div class="s-form">
+            <div class="s-section-head">
                 <div class="s-form-title">Personalized Primer</div>
                 <div class="s-form-desc">We'll ask you a few questions to understand your background. Our AI adapts each question based on your answers.</div>
+            </div>
             """, unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
@@ -787,6 +1284,22 @@ elif page == "generate":
                 "Topics", height=100, label_visibility="collapsed",
                 value="Python Basics\nSQL Fundamentals\nLinear Algebra\nProbability and Statistics",
             )
+
+            st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
+
+            # Video options — visible upfront so user can set before generating
+            st.markdown("""
+            <div class="s-video-options">
+                <div class="s-video-options-label">Video Options</div>
+            </div>
+            """, unsafe_allow_html=True)
+            _pps1, _pps2 = st.columns(2)
+            with _pps1:
+                _pp_scr = st.toggle("Pen Annotations", value=st.session_state.gen_scribble, key="tog_scribble_pp0")
+                st.session_state.gen_scribble = _pp_scr
+            with _pps2:
+                _pp_ani = st.toggle("Animations (Manim)", value=False, key="tog_anim_pp0", disabled=True, help="Temporarily disabled")
+                st.session_state.gen_animation = _pp_ani
 
             st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
 
@@ -811,8 +1324,6 @@ elif page == "generate":
                     else:
                         st.error("Could not generate question. Check that ANTHROPIC_API_KEY is set in .env")
 
-            st.markdown('</div>', unsafe_allow_html=True)
-
         # ── Steps 1-N: Adaptive questions ─────────────────────────────────────
         elif 1 <= st.session_state.qa_step <= MAX_QUESTIONS:
             course = st.session_state.qa_course
@@ -822,9 +1333,10 @@ elif page == "generate":
             current_q = st.session_state.qa_questions[step - 1]
 
             st.markdown(f"""
-            <div class="s-form">
+            <div class="s-section-head">
                 <div class="s-form-title">Background Assessment</div>
                 <div class="s-form-desc">{course} Program &middot; Question {step} of {MAX_QUESTIONS}</div>
+            </div>
             """, unsafe_allow_html=True)
 
             # Progress bar
@@ -893,8 +1405,6 @@ elif page == "generate":
                             else:
                                 st.markdown('<div class="s-error">Failed to generate next question.</div>', unsafe_allow_html=True)
 
-            st.markdown('</div>', unsafe_allow_html=True)
-
         # ── Final step: Generate primer ───────────────────────────────────────
         elif st.session_state.qa_step > MAX_QUESTIONS:
             course = st.session_state.qa_course
@@ -919,70 +1429,73 @@ elif page == "generate":
                 </div>
                 """, unsafe_allow_html=True)
 
-            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-            bc1, bc2 = st.columns([1, 3])
-            with bc1:
-                if st.button("← Retake", key="qa_retake"):
-                    st.session_state.qa_step = 0
-                    st.session_state.qa_questions = []
-                    st.session_state.qa_answers = []
-                    st.rerun()
-            with bc2:
-                if st.button("Generate My Primer →", type="primary", key="gen_primer"):
-                    from models.schemas import QuestionnaireInput, QnA
-                    from pipelines.dynamic import DynamicPrimerPipeline
-                    from modules.groot.generator import GrootSlideGenerator
-                    from modules.tts.elevenlabs import ElevenLabsTTS
-                    from modules.video_assembler.ffmpeg import FFmpegVideoAssembler
-                    from modules.storage.local import LocalStorage
-                    from modules.personalization.claude import ClaudePersonalization
-
-                    curriculum = {"course": course, "topics": topics}
-                    qna_list = [QnA(question=q, answer=a) for q, a in qa_pairs]
-
-                    el_k, el_v = _get_el_creds()
-                    pipeline = DynamicPrimerPipeline(
-                        personalization=ClaudePersonalization(),
-                        slide_generator=GrootSlideGenerator(cookies=GROOT_COOKIES),
-                        tts=ElevenLabsTTS(api_key=el_k, voice_id=el_v),
-                        video_assembler=FFmpegVideoAssembler(temp_dir=TEMP_DIR),
-                        storage=LocalStorage(base_path=OUTPUT_DIR),
-                        temp_dir=TEMP_DIR, output_dir=OUTPUT_DIR,
-                    )
-                    questionnaire = QuestionnaireInput(
-                        course=course, group_level=level,
-                        curriculum=curriculum, questions_and_answers=qna_list,
-                    )
-                    os.makedirs(TEMP_DIR, exist_ok=True)
-                    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-                    with st.spinner("Analyzing your profile and generating primers..."):
-                        result = pipeline.run(questionnaire, student_id="student_demo_001")
-
+            # Check if process just finished
+            proc = st.session_state.get("gen_process")
+            if proc and not proc.is_alive():
+                result_data = _read_result()
+                st.session_state.gen_process = None
+                if result_data and result_data.get("status") == "ok":
+                    videos = result_data["videos"]
                     sections = {}
-                    for v in result.videos:
-                        sections.setdefault(v.section, []).append({
-                            "path": v.video_path, "topic": v.topic, "section": v.section,
-                        })
-                    st.session_state.last_gen_result = {
+                    for v in videos:
+                        sections.setdefault(v["section"], []).append(v)
+                    _append_gen_result({
                         "type": "primer",
                         "topic": f"{course} — Personalized Primer",
                         "sections": sections,
-                        "videos": [{"path": v.video_path, "topic": v.topic, "section": v.section} for v in result.videos],
-                        "total": len(result.videos),
-                    }
-                    # Reset questionnaire for next time
+                        "videos": videos,
+                    })
                     st.session_state.qa_step = 0
                     st.session_state.qa_questions = []
                     st.session_state.qa_answers = []
                     st.rerun()
+                elif result_data:
+                    st.error(f"Generation failed: {result_data.get('error', 'Unknown error')}")
+
+            st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
+
+            # Video options panel (top-level, always visible)
+            st.markdown("""
+            <div class="s-video-options">
+                <div class="s-video-options-label">Video Options</div>
+            </div>
+            """, unsafe_allow_html=True)
+            ppc1, ppc2 = st.columns(2)
+            with ppc1:
+                pp_scribble = st.toggle("Pen Annotations", value=st.session_state.gen_scribble, key="tog_scribble_pp")
+                st.session_state.gen_scribble = pp_scribble
+            with ppc2:
+                pp_animation = st.toggle("Animations (Manim)", value=False, key="tog_anim_pp", disabled=True, help="Temporarily disabled")
+                st.session_state.gen_animation = pp_animation
+
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+            if _show_generation_status(f"{course} — Personalized Primer"):
+                pass
+            else:
+                bc1, bc2 = st.columns([1, 3])
+                with bc1:
+                    if st.button("← Retake", key="qa_retake"):
+                        st.session_state.qa_step = 0
+                        st.session_state.qa_questions = []
+                        st.session_state.qa_answers = []
+                        st.rerun()
+                with bc2:
+                    if st.button("Generate My Primer →", type="primary", key="gen_primer"):
+                        from dashboard.pipeline_worker import run_personalized_primer
+                        el_k, el_v = _get_el_creds()
+                        _start_process(run_personalized_primer,
+                                       (course, level, topics, qa_pairs, el_k, el_v, _get_llm_key(),
+                                        pp_scribble, pp_animation))
+                        st.rerun()
 
     # ── Case Study Document ───────────────────────────────────────────────────
     else:
         st.markdown("""
-        <div class="s-form">
+        <div class="s-section-head">
             <div class="s-form-title">Case Study Video</div>
             <div class="s-form-desc">Paste your case study document. Our AI will structure it into a detailed, guided video walkthrough.</div>
+        </div>
         """, unsafe_allow_html=True)
 
         doc_topic = st.text_input("Case Study Name", value="Driver Drowsiness Detection System", key="doc_t")
@@ -999,128 +1512,56 @@ elif page == "generate":
 
         st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
 
-        if st.button("Generate Case Study Video", type="primary", key="gen_doc"):
-            if not problem.strip() or not approach.strip():
-                st.markdown('<div class="s-error">Please provide at least the Problem Statement and Approach.</div>', unsafe_allow_html=True)
-            else:
-                call_llm = _get_call_llm(max_tokens=16000)
-                if not call_llm:
-                    st.markdown('<div class="s-error">Claude API key required. Set ANTHROPIC_API_KEY in .env</div>', unsafe_allow_html=True)
-                else:
-                    from pipelines.document import DocumentPipeline
-                    from modules.tts.elevenlabs import ElevenLabsTTS
-                    from modules.video_assembler.ffmpeg import FFmpegVideoAssembler
-                    from modules.storage.local import LocalStorage
+        # Check if process just finished
+        proc = st.session_state.get("gen_process")
+        if proc and not proc.is_alive():
+            result_data = _read_result()
+            st.session_state.gen_process = None
+            if result_data and result_data.get("status") == "ok":
+                video_path = result_data["path"]
+                if video_path and os.path.exists(video_path):
+                    _append_gen_result({
+                        "type": "document", "topic": doc_topic,
+                        "videos": [{"path": video_path, "topic": doc_topic, "section": "Case Study Document"}],
+                    })
+                    st.rerun()
+            elif result_data:
+                st.error(f"Generation failed: {result_data.get('error', 'Unknown error')}")
 
-                    el_k, el_v = _get_el_creds()
-                    pipeline = DocumentPipeline(
-                        tts=ElevenLabsTTS(api_key=el_k, voice_id=el_v),
-                        video_assembler=FFmpegVideoAssembler(temp_dir=TEMP_DIR),
-                        storage=LocalStorage(base_path=OUTPUT_DIR),
-                        call_llm=call_llm, temp_dir=TEMP_DIR, output_dir=OUTPUT_DIR,
-                    )
-                    os.makedirs(TEMP_DIR, exist_ok=True)
-                    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-                    with st.spinner(f"Generating case study video for \"{doc_topic}\"..."):
-                        video_path = pipeline.run(
-                            topic=doc_topic,
-                            problem_statement=problem,
-                            dataset_description=dataset or "(Not provided)",
-                            approach_document=approach,
-                        )
-
-                    if video_path and os.path.exists(video_path):
-                        st.session_state.last_gen_result = {
-                            "type": "document",
-                            "topic": doc_topic,
-                            "videos": [{"path": video_path, "topic": doc_topic, "section": "Case Study"}],
-                        }
-                        st.rerun()
-                    else:
-                        st.markdown('<div class="s-error">Generation failed. Check logs.</div>', unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # ── Show generation results ───────────────────────────────────────────────
-    result = st.session_state.last_gen_result
-    if result:
-        st.markdown("<div class='s-spacer'></div>", unsafe_allow_html=True)
-
-        total = len(result.get("videos", []))
-        st.markdown(f"""
-        <div class="s-success">
-            Generated <strong>{total} video{'s' if total != 1 else ''}</strong> for
-            <strong>{result['topic']}</strong>
+        # Video options panel
+        st.markdown("""
+        <div class="s-video-options">
+            <div class="s-video-options-label">Video Options</div>
         </div>
         """, unsafe_allow_html=True)
+        dvc1, dvc2 = st.columns(2)
+        with dvc1:
+            doc_scribble = st.toggle("Pen Annotations",value=st.session_state.gen_scribble, key="tog_scribble_doc")
+            st.session_state.gen_scribble = doc_scribble
+        with dvc2:
+            st.toggle("Animations (Manim)", value=False, key="tog_anim_doc", disabled=True,
+                      help="Animations not supported in Case Study pipeline")
 
-        # If sections exist (primer), show grouped by section
-        sections = result.get("sections")
-        if sections:
-            for section_name, vids in sections.items():
-                st.markdown(f"""
-                <div class="s-section-divider">
-                    <span>{section_name}</span>
-                    <span class="s-section-count">{len(vids)} video{'s' if len(vids) != 1 else ''}</span>
-                </div>
-                """, unsafe_allow_html=True)
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-                for i, vid in enumerate(vids):
-                    dur = _video_duration_str(vid["path"]) if os.path.exists(vid["path"]) else ""
-                    st.markdown(f"""
-                    <div class="s-result-card">
-                        <div class="s-result-num">{i + 1}</div>
-                        <div class="s-result-body">
-                            <div class="s-result-title">{vid['topic']}</div>
-                            <div class="s-result-sub">{dur + ' &middot; ' if dur else ''}AI Generated</div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    if os.path.exists(vid["path"]):
-                        with st.expander(f"Watch: {vid['topic']}"):
-                            with open(vid["path"], "rb") as f:
-                                st.video(f.read())
-                            with open(vid["path"], "rb") as f:
-                                st.download_button(
-                                    "Download",
-                                    f.read(),
-                                    file_name=os.path.basename(vid["path"]),
-                                    mime="video/mp4",
-                                    key=f"dl_s_{section_name}_{i}",
-                                )
+        if _show_generation_status(f'"{doc_topic}" — Case Study Video'):
+            pass
         else:
-            # Single or document — show video directly
-            for i, vid in enumerate(result.get("videos", [])):
-                if os.path.exists(vid["path"]):
-                    st.markdown('<div class="s-player-frame">', unsafe_allow_html=True)
-                    with open(vid["path"], "rb") as f:
-                        st.video(f.read())
-                    st.markdown('</div>', unsafe_allow_html=True)
+            if st.button("Generate Case Study Video →", type="primary", key="gen_doc"):
+                if not problem.strip() or not approach.strip():
+                    st.error("Please provide at least the Problem Statement and Approach.")
+                elif not _get_llm_key():
+                    st.error("Claude API key required. Set ANTHROPIC_API_KEY in .env")
+                else:
+                    from dashboard.pipeline_worker import run_document
+                    el_k, el_v = _get_el_creds()
+                    _start_process(run_document,
+                                   (doc_topic, problem, dataset or "(Not provided)", approach,
+                                    el_k, el_v, _get_llm_key(), doc_scribble))
+                    st.rerun()
 
-                    dur = _video_duration_str(vid["path"])
-                    size_mb = os.path.getsize(vid["path"]) / (1024 * 1024)
-                    st.markdown(f"""
-                    <div class="s-player-info">
-                        <div class="s-player-title">{vid['topic']}</div>
-                        <div class="s-player-sub">{dur + ' &middot; ' if dur else ''}{size_mb:.1f} MB &middot; AI Generated</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    with open(vid["path"], "rb") as f:
-                        st.download_button(
-                            "Download MP4",
-                            f.read(),
-                            file_name=os.path.basename(vid["path"]),
-                            mime="video/mp4",
-                            key=f"dl_v_{i}",
-                        )
-
-        # Clear results button
-        if st.button("Clear Results", key="clear_gen"):
-            st.session_state.last_gen_result = None
-            st.rerun()
+    # ── Generation history (persists until manually removed) ──────────────────
+    _render_gen_history(context="generate")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1149,22 +1590,26 @@ elif page == "library":
             st.session_state.page = "generate"
             st.rerun()
     else:
-        # Group by category
-        categories = {}
-        for v in all_videos:
-            categories.setdefault(v["category"], []).append(v)
+        # Group by top-level pipeline type (first path component)
+        def _top_cat(cat_path):
+            first = cat_path.split("/")[0] if cat_path else "general"
+            return first.replace("_", " ").title()
 
-        # Category filter
-        cat_names = list(categories.keys())
-        if len(cat_names) > 1:
-            selected_cat = st.radio(
-                "Filter",
-                ["All"] + cat_names,
-                horizontal=True,
+        top_categories = {}
+        for v in all_videos:
+            top = _top_cat(v["category"])
+            top_categories.setdefault(top, []).append(v)
+
+        # Category filter — selectbox avoids the radio-tab CSS mess with long names
+        top_cat_names = list(top_categories.keys())
+        if len(top_cat_names) > 1:
+            selected_top = st.selectbox(
+                "Filter by type",
+                ["All"] + top_cat_names,
                 label_visibility="collapsed",
             )
         else:
-            selected_cat = "All"
+            selected_top = "All"
 
         st.markdown("<div class='s-spacer-sm'></div>", unsafe_allow_html=True)
 
@@ -1172,12 +1617,12 @@ elif page == "library":
         left_col, right_col = st.columns([2, 3])
 
         with left_col:
-            show_cats = cat_names if selected_cat == "All" else [selected_cat]
-            for cat in show_cats:
-                vids = categories[cat]
+            show_tops = top_cat_names if selected_top == "All" else [selected_top]
+            for top in show_tops:
+                vids = top_categories[top]
                 st.markdown(f"""
                 <div class="s-section-divider">
-                    <span>{cat.upper()}</span>
+                    <span>{top.upper()}</span>
                     <span class="s-section-count">{len(vids)}</span>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1185,19 +1630,19 @@ elif page == "library":
                 for i, vid in enumerate(vids):
                     is_active = (st.session_state.play_video and
                                  st.session_state.play_video.get("path") == vid["path"])
-                    style = "border-left: 3px solid #0055FF;" if is_active else ""
+                    border = "border-left:3px solid #0055FF;" if is_active else ""
                     dur = _video_duration_str(vid["path"])
 
                     st.markdown(f"""
-                    <div class="s-vcard" style="{style}">
+                    <div class="s-vcard" style="{border}">
                         <div class="s-vcard-body" style="padding:14px 18px">
-                            <div class="s-vcard-cat">{vid['category'].upper()}</div>
+                            <div class="s-vcard-cat">{top.upper()}</div>
                             <div class="s-vcard-title" style="font-size:13px">{vid['name']}</div>
                             <div class="s-vcard-meta">{dur + ' &middot; ' if dur else ''}{vid['size_mb']:.1f} MB</div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
-                    if st.button("Play", key=f"lib_{cat}_{i}"):
+                    if st.button("Play", key=f"lib_{top}_{i}"):
                         st.session_state.play_video = vid
                         st.rerun()
 
@@ -1233,6 +1678,88 @@ elif page == "library":
                     <div class="s-empty-sub">Click Play on any video from the list.</div>
                 </div>
                 """, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: METRICS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "metrics":
+    from utils.metrics import load_all
+
+    st.markdown("""
+    <div class="s-eyebrow">Pipeline Analytics</div>
+    <div class="s-h1">Generation <b>Metrics</b></div>
+    <p class="s-subtitle">Performance data across all video generation runs.</p>
+    """, unsafe_allow_html=True)
+    st.markdown("<div class='s-spacer-sm'></div>", unsafe_allow_html=True)
+
+    runs = load_all()
+
+    if not runs:
+        st.info("No runs yet — generate a video to start collecting metrics.")
+    else:
+        ok_runs = [r for r in runs if r.get("status") == "success"]
+        fail_runs = [r for r in runs if r.get("status") == "failed"]
+
+        total_videos = len(ok_runs)
+        avg_time = (sum(r.get("total_time_seconds", 0) for r in ok_runs) / total_videos) if total_videos else 0
+        total_slides = sum(r.get("slides_generated", 0) for r in ok_runs)
+        avg_duration = (sum(r.get("video_duration_seconds", 0) for r in ok_runs) / total_videos) if total_videos else 0
+
+        # ── Summary metrics ────────────────────────────────────────────────────
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+        mc1.metric("Videos Generated", total_videos)
+        mc2.metric("Avg Generation Time", f"{avg_time/60:.1f} min")
+        mc3.metric("Total Slides Made", total_slides)
+        mc4.metric("Avg Video Length", f"{avg_duration/60:.1f} min")
+        mc5.metric("Failed Runs", len(fail_runs))
+
+        st.divider()
+
+        # ── Run history ────────────────────────────────────────────────────────
+        st.subheader("Run History")
+
+        import pandas as pd
+        rows = []
+        for r in reversed(runs[-30:]):
+            status = r.get("status", "unknown")
+            dur = r.get("video_duration_seconds", 0)
+            dur_str = f"{int(dur//60)}:{int(dur%60):02d}" if dur else "—"
+            t = r.get("total_time_seconds", 0)
+            rows.append({
+                "Status": "✅ OK" if status == "success" else "❌ FAIL",
+                "Topic": r.get("topic", "—"),
+                "Slides": r.get("slides_generated", 0),
+                "Video Length": dur_str,
+                "Gen Time": f"{t:.0f}s" if t else "—",
+                "Timestamp": r.get("timestamp", "")[:16],
+                "Error": r.get("error", "")[:80] if status == "failed" else "",
+            })
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # ── Step breakdown ─────────────────────────────────────────────────────
+        if ok_runs:
+            st.divider()
+            st.subheader("Step Breakdown (avg across successful runs)")
+
+            step_keys = [
+                ("slide_generation_seconds", "Slide Generation"),
+                ("tts_generation_seconds", "Text-to-Speech"),
+                ("video_assembly_seconds", "Video Assembly"),
+                ("storage_seconds", "Storage"),
+            ]
+            total_avg = avg_time if avg_time else 1
+            for key, label in step_keys:
+                vals = [r.get(key, 0) for r in ok_runs if r.get(key) is not None]
+                if not vals:
+                    continue
+                avg = sum(vals) / len(vals)
+                pct = min(avg / total_avg, 1.0)
+                col_label, col_val = st.columns([4, 1])
+                col_label.caption(label)
+                col_val.caption(f"{avg:.1f}s avg")
+                st.progress(pct)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

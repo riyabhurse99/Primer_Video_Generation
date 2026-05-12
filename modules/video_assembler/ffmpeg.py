@@ -49,12 +49,12 @@ def _make_clip(image_path: str, audio_path: str, output_path: str, duration: flo
             raise RuntimeError(f"FFmpeg animation clip failed: {result.stderr}")
         return
 
-    # Pen annotation temporarily disabled — revisiting the visual style
-    # element_boxes = load_element_boxes(image_path) if annotate else []
-    # if element_boxes:
-    #     logger.info(f"  Pen annotation enabled — {len(element_boxes)} elements")
-    #     make_annotated_clip(image_path, audio_path, output_path, duration, element_boxes)
-    #     return
+    # Slide PNG — check for pen annotation
+    element_boxes = load_element_boxes(image_path) if annotate else []
+    if element_boxes:
+        logger.info(f"  Pen annotation enabled — {len(element_boxes)} elements")
+        make_annotated_clip(image_path, audio_path, output_path, duration, element_boxes)
+        return
 
     cmd = [
         "ffmpeg", "-y",

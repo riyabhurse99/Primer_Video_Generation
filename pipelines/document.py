@@ -171,6 +171,7 @@ class DocumentPipeline:
         problem_statement: str,
         dataset_description: str,
         approach_document: str,
+        scribble: bool = False,
     ) -> str:
         """Generate a video from document content. Returns the stored video path.
 
@@ -273,7 +274,7 @@ class DocumentPipeline:
                         logger.info(f"  audio_{i:03d}.mp3 already exists — skipping")
                     audio_paths.append(audio_path)
                     paired_images.append(image)
-                    annotation_mask.append(True)
+                    annotation_mask.append(scribble)
 
             logger.info(f"  TTS done — {len(audio_paths)} clips ({tts_timer.elapsed:.1f}s)")
 
@@ -287,7 +288,7 @@ class DocumentPipeline:
 
             # ── Step 5: Save ─────────────────────────────────────────────
             with StepTimer() as storage_timer:
-                stored_path = self.storage.save(final_video_path, f"document/{safe_topic}.mp4")
+                stored_path = self.storage.save(final_video_path, f"{safe_topic}.mp4")
 
             total_time = time.time() - pipeline_start
             video_size_mb = os.path.getsize(stored_path) / (1024 * 1024)
