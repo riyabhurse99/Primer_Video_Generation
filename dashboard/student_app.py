@@ -100,7 +100,7 @@ def _get_call_llm(max_tokens=2048):
                 model=CLAUDE_MODEL, max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return msg.content[0].text
+            return "".join(b.text for b in msg.content if hasattr(b, "text"))
         return call_llm
     except Exception:
         return None

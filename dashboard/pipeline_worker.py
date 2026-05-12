@@ -48,7 +48,7 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, res
         def call_llm(prompt):
             msg = client.messages.create(model=CLAUDE_MODEL, max_tokens=2048,
                                          messages=[{"role": "user", "content": prompt}])
-            return msg.content[0].text
+            return "".join(b.text for b in msg.content if hasattr(b, "text"))
 
         os.makedirs(TEMP_DIR, exist_ok=True)
         os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -66,9 +66,9 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, res
 
         # Patch pipeline to emit progress
         original_run = pipeline.run
-        def patched_run(topic, level=None):
+        def patched_run(topic, level=None, scribble=False, animation=False):
             _write_progress(progress_path, "Generating slides", "AI is building your slides...")
-            return original_run(topic, level=level)
+            return original_run(topic, level=level, scribble=scribble, animation=animation)
         pipeline.run = patched_run
 
         video_path = pipeline.run(topic, level=level, scribble=scribble, animation=animation)
@@ -107,7 +107,7 @@ def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scr
                 _write_progress(progress_path, "Generating audio scripts", f"Writing narration for slides ({call_count[0]} calls done)...")
             msg = client.messages.create(model=CLAUDE_MODEL, max_tokens=16000,
                                          messages=[{"role": "user", "content": prompt}])
-            return msg.content[0].text
+            return "".join(b.text for b in msg.content if hasattr(b, "text"))
 
         os.makedirs(TEMP_DIR, exist_ok=True)
         os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -154,7 +154,7 @@ def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key
         def call_llm(prompt):
             msg = client.messages.create(model=CLAUDE_MODEL, max_tokens=2048,
                                          messages=[{"role": "user", "content": prompt}])
-            return msg.content[0].text
+            return "".join(b.text for b in msg.content if hasattr(b, "text"))
 
         os.makedirs(TEMP_DIR, exist_ok=True)
         os.makedirs(OUTPUT_DIR, exist_ok=True)
