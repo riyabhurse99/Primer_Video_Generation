@@ -82,14 +82,10 @@ class DirectPipeline:
                 call_llm=self.call_llm,
             )
 
-            # Step 1b2: Strip greeting from first narration (intro handles it)
-            if narrations and narrations[0]:
-                narrations[0] = _strip_greeting(narrations[0])
-
-            # Step 1c: Generate whiteboard sketches (skipped if no LLM configured)
+            # Step 1c: Generate whiteboard sketches (skipped if scribble is off or no LLM)
             # Analyzes each narration and produces sketch instructions for
             # context-aware drawings (flow diagrams, concept maps, etc.)
-            if self.call_llm:
+            if self.call_llm and scribble:
                 for i, (image, narration) in enumerate(zip(images, narrations)):
                     if not narration.strip():
                         continue
@@ -128,14 +124,7 @@ class DirectPipeline:
             with StepTimer() as tts_timer:
                 audio_paths = []
                 paired_images = []
-
-                # Intro greeting — spoken over the first slide, no annotation
-                intro_text = _generate_intro(topic, self.call_llm)
-                intro_audio = os.path.join(video_temp_dir, "audio_intro.mp3")
-                self.tts.generate_audio(intro_text, intro_audio)
-                audio_paths.append(intro_audio)
-                paired_images.append(images[0])  # show first slide during intro
-                annotation_mask = [False]  # no scribble during greeting
+                annotation_mask = []
 
                 for i, (image, narration) in enumerate(zip(images, narrations)):
                     narration_text = narration or f"Slide {i + 1}."
