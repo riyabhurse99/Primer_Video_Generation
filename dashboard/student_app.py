@@ -62,6 +62,11 @@ def _scan_videos() -> list[dict]:
     return vids
 
 
+VOICE_MAP = {
+    "Shivank Sir": "7M69Y78mYqPLZS5ZZSTT",
+    "Anshuman Sir": "SEUfK8UWvlGZ28kz31ts"
+}
+
 def _get_el_creds():
     """Get ElevenLabs credentials from secrets or .env."""
     try:
@@ -1238,6 +1243,9 @@ elif page == "generate":
             animation = st.toggle("Animations (Manim)", value=False, key="tog_anim_single", disabled=True, help="Temporarily disabled")
             st.session_state.gen_animation = animation
 
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        instructor_voice = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_single")
+
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
         # Show status OR generate button
@@ -1249,8 +1257,9 @@ elif page == "generate":
                     st.error("Please enter a topic.")
                 else:
                     from dashboard.pipeline_worker import run_single_topic
-                    el_k, el_v = _get_el_creds()
-                    _start_process(run_single_topic, (topic, level, el_k, el_v, _get_llm_key(), scribble, animation))
+                    el_k, _ = _get_el_creds()
+                    selected_voice_id = VOICE_MAP[instructor_voice]
+                    _start_process(run_single_topic, (topic, level, el_k, selected_voice_id, _get_llm_key(), scribble, animation))
                     st.rerun()
 
     # ── Personalized Primer ───────────────────────────────────────────────────
@@ -1300,6 +1309,9 @@ elif page == "generate":
             with _pps2:
                 _pp_ani = st.toggle("Animations (Manim)", value=False, key="tog_anim_pp0", disabled=True, help="Temporarily disabled")
                 st.session_state.gen_animation = _pp_ani
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            instructor_voice = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_pp0")
 
             st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
 
@@ -1468,6 +1480,9 @@ elif page == "generate":
                 pp_animation = st.toggle("Animations (Manim)", value=False, key="tog_anim_pp", disabled=True, help="Temporarily disabled")
                 st.session_state.gen_animation = pp_animation
 
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            instructor_voice_pp = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_pp")
+
             st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
             if _show_generation_status(f"{course} — Personalized Primer"):
@@ -1483,32 +1498,46 @@ elif page == "generate":
                 with bc2:
                     if st.button("Generate My Primer →", type="primary", key="gen_primer"):
                         from dashboard.pipeline_worker import run_personalized_primer
-                        el_k, el_v = _get_el_creds()
+                        el_k, _ = _get_el_creds()
+                        selected_voice_id = VOICE_MAP[instructor_voice_pp]
                         _start_process(run_personalized_primer,
-                                       (course, level, topics, qa_pairs, el_k, el_v, _get_llm_key(),
+                                       (course, level, topics, qa_pairs, el_k, selected_voice_id, _get_llm_key(),
                                         pp_scribble, pp_animation))
                         st.rerun()
 
-    # ── Case Study Document ───────────────────────────────────────────────────
+    # ── Document Video (Generic) ───────────────────────────────────────────────
     else:
         st.markdown("""
         <div class="s-section-head">
-            <div class="s-form-title">Case Study Video</div>
-            <div class="s-form-desc">Paste your case study document. Our AI will structure it into a detailed, guided video walkthrough.</div>
+            <div class="s-form-title">Document Video</div>
+            <div class="s-form-desc">Paste any document — case study, assignment, syllabus, notes — and tell the AI how you want the video structured.</div>
         </div>
         """, unsafe_allow_html=True)
 
-        doc_topic = st.text_input("Case Study Name", value="Driver Drowsiness Detection System", key="doc_t")
+        doc_topic = st.text_input("Video Title", placeholder="e.g. Driver Drowsiness Detection — Case Study", key="doc_t")
 
         st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
 
-        c1, c2 = st.columns(2)
-        with c1:
-            problem = st.text_area("Problem Statement", height=200, placeholder="Paste the problem statement...", key="doc_p")
-        with c2:
-            dataset = st.text_area("Dataset Description", height=200, placeholder="Paste dataset details...", key="doc_d")
+        doc_content = st.text_area(
+            "Document Content",
+            height=280,
+            max_chars=25000,
+            placeholder="Paste the full document text here (problem statement, approach, syllabus, assignment, paper, notes...)",
+            key="doc_content"
+        )
 
-        approach = st.text_area("Approach / Methodology", height=200, placeholder="Paste the approach document...", key="doc_a")
+        doc_instructions = st.text_area(
+            "Video Generation Instructions",
+            height=140,
+            max_chars=1000,
+            placeholder=(
+                'e.g. "Explain this document for beginner students."\n'
+                'e.g. "This is an assignment — give hints but don\'t reveal the answers."\n'
+                'e.g. "Cover only the key concepts, keep it to 5 slides."\n'
+                'e.g. "This is a research paper — explain it in simple, intuitive terms."'
+            ),
+            key="doc_instructions"
+        )
 
         st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
 
@@ -1522,7 +1551,7 @@ elif page == "generate":
                 if video_path and os.path.exists(video_path):
                     _append_gen_result({
                         "type": "document", "topic": doc_topic,
-                        "videos": [{"path": video_path, "topic": doc_topic, "section": "Case Study Document"}],
+                        "videos": [{"path": video_path, "topic": doc_topic, "section": "Document Video"}],
                     })
                     st.rerun()
             elif result_data:
@@ -1536,28 +1565,36 @@ elif page == "generate":
         """, unsafe_allow_html=True)
         dvc1, dvc2 = st.columns(2)
         with dvc1:
-            doc_scribble = st.toggle("Pen Annotations",value=st.session_state.gen_scribble, key="tog_scribble_doc")
+            doc_scribble = st.toggle("Pen Annotations", value=st.session_state.gen_scribble, key="tog_scribble_doc")
             st.session_state.gen_scribble = doc_scribble
         with dvc2:
             st.toggle("Animations (Manim)", value=False, key="tog_anim_doc", disabled=True,
-                      help="Animations not supported in Case Study pipeline")
+                      help="Animations not supported in Document pipeline")
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        instructor_voice_doc = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_doc")
 
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-        if _show_generation_status(f'"{doc_topic}" — Case Study Video'):
+        if _show_generation_status(f'"{doc_topic}" — Document Video'):
             pass
         else:
-            if st.button("Generate Case Study Video →", type="primary", key="gen_doc"):
-                if not problem.strip() or not approach.strip():
-                    st.error("Please provide at least the Problem Statement and Approach.")
+            if st.button("Generate Document Video →", type="primary", key="gen_doc"):
+                if not doc_topic.strip():
+                    st.error("Please enter a video title.")
+                elif not doc_content.strip():
+                    st.error("Please paste your document content.")
+                elif not doc_instructions.strip():
+                    st.error("Please add instructions so the AI knows how to structure the video.")
                 elif not _get_llm_key():
                     st.error("Claude API key required. Set ANTHROPIC_API_KEY in .env")
                 else:
                     from dashboard.pipeline_worker import run_document
-                    el_k, el_v = _get_el_creds()
+                    el_k, _ = _get_el_creds()
+                    selected_voice_id = VOICE_MAP[instructor_voice_doc]
                     _start_process(run_document,
-                                   (doc_topic, problem, dataset or "(Not provided)", approach,
-                                    el_k, el_v, _get_llm_key(), doc_scribble))
+                                   (doc_topic, doc_content, doc_instructions,
+                                    el_k, selected_voice_id, _get_llm_key(), doc_scribble))
                     st.rerun()
 
     # ── Generation history (persists until manually removed) ──────────────────
@@ -1576,12 +1613,152 @@ elif page == "library":
     """, unsafe_allow_html=True)
     st.markdown("<div class='s-spacer-sm'></div>", unsafe_allow_html=True)
 
+# ── Library page CSS ──────────────────────────────────────────────────────────
+    st.markdown("""
+    <style>
+    /* Library grid */
+    .lib-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 16px;
+        margin-top: 8px;
+    }
+    .lib-card {
+        background: white;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        transition: box-shadow 0.18s, border-color 0.18s, transform 0.15s;
+        cursor: pointer;
+    }
+    .lib-card:hover {
+        box-shadow: 0 6px 24px rgba(0,85,255,0.10);
+        border-color: var(--blue);
+        transform: translateY(-2px);
+    }
+    .lib-card.lib-active {
+        border-color: var(--blue);
+        box-shadow: 0 0 0 2px rgba(0,85,255,0.18), 0 6px 24px rgba(0,85,255,0.10);
+    }
+    .lib-thumb {
+        background: linear-gradient(135deg, #011845 0%, #0a2d6e 100%);
+        height: 150px;
+        display: flex; align-items: center; justify-content: center;
+        position: relative;
+    }
+    .lib-play-btn {
+        width: 52px; height: 52px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.12);
+        border: 2px solid rgba(255,255,255,0.5);
+        display: flex; align-items: center; justify-content: center;
+        color: white; font-size: 20px;
+        backdrop-filter: blur(4px);
+    }
+    .lib-dur-badge {
+        position: absolute; bottom: 10px; right: 12px;
+        background: rgba(0,0,0,0.55);
+        color: white; font-size: 10px; font-weight: 600;
+        padding: 3px 8px; border-radius: 4px;
+        letter-spacing: 0.5px;
+    }
+    .lib-type-badge {
+        position: absolute; top: 10px; left: 12px;
+        font-size: 9px; font-weight: 700;
+        letter-spacing: 1.5px; text-transform: uppercase;
+        padding: 3px 10px; border-radius: 3px;
+    }
+    .lib-body {
+        padding: 14px 16px 16px;
+    }
+    .lib-title {
+        font-size: 14px; font-weight: 600;
+        color: var(--heading); line-height: 1.35;
+        letter-spacing: -0.2px; margin-bottom: 6px;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+    .lib-meta {
+        font-size: 11px; color: var(--light-muted);
+        display: flex; align-items: center; gap: 6px;
+    }
+    .lib-meta-dot { color: #D1D5DB; }
+
+    /* Player pane */
+    .lib-player-wrap {
+        background: white;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        position: sticky;
+        top: 16px;
+    }
+    .lib-player-header {
+        background: var(--navy);
+        padding: 20px 24px;
+    }
+    .lib-player-title {
+        font-size: 17px; font-weight: 600;
+        color: white; letter-spacing: -0.3px;
+        margin-bottom: 4px;
+        line-height: 1.3;
+    }
+    .lib-player-sub {
+        font-size: 12px; color: rgba(255,255,255,0.45);
+    }
+    .lib-player-placeholder {
+        background: linear-gradient(135deg, #0a1c3e 0%, #011845 100%);
+        height: 280px;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        gap: 12px;
+    }
+    .lib-placeholder-icon {
+        font-size: 40px; opacity: 0.25; color: white;
+    }
+    .lib-placeholder-text {
+        font-size: 14px; color: rgba(255,255,255,0.3);
+        font-weight: 500;
+    }
+    .lib-filter-bar {
+        display: flex; gap: 8px; flex-wrap: wrap;
+        margin-bottom: 20px;
+    }
+    .lib-filter-chip {
+        padding: 6px 16px;
+        border-radius: 20px;
+        font-size: 11px; font-weight: 600;
+        letter-spacing: 0.8px; text-transform: uppercase;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: white;
+        color: var(--muted);
+        transition: all 0.15s;
+    }
+    .lib-filter-chip.active {
+        background: var(--blue);
+        color: white;
+        border-color: var(--blue);
+    }
+    .lib-cat-label {
+        font-size: 10px; font-weight: 700;
+        letter-spacing: 2px; text-transform: uppercase;
+        color: var(--muted);
+        margin: 24px 0 10px 0;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     all_videos = _scan_videos()
 
     if not all_videos:
         st.markdown("""
         <div class="s-empty">
-            <div class="s-empty-icon">&#9654;</div>
+            <div class="s-empty-icon">&#127902;</div>
             <div class="s-empty-title">No videos yet</div>
             <div class="s-empty-sub">Head to Generate Primer to create your first video.</div>
         </div>
@@ -1590,7 +1767,7 @@ elif page == "library":
             st.session_state.page = "generate"
             st.rerun()
     else:
-        # Group by top-level pipeline type (first path component)
+        # Group by category
         def _top_cat(cat_path):
             first = cat_path.split("/")[0] if cat_path else "general"
             return first.replace("_", " ").title()
@@ -1600,84 +1777,120 @@ elif page == "library":
             top = _top_cat(v["category"])
             top_categories.setdefault(top, []).append(v)
 
-        # Category filter — selectbox avoids the radio-tab CSS mess with long names
         top_cat_names = list(top_categories.keys())
-        if len(top_cat_names) > 1:
-            selected_top = st.selectbox(
-                "Filter by type",
-                ["All"] + top_cat_names,
-                label_visibility="collapsed",
-            )
-        else:
-            selected_top = "All"
 
-        st.markdown("<div class='s-spacer-sm'></div>", unsafe_allow_html=True)
-
-        # Two-column: list + player
-        left_col, right_col = st.columns([2, 3])
+        # Layout: list left, player right
+        left_col, right_col = st.columns([3, 2], gap="large")
 
         with left_col:
+            # Filter chips using selectbox hidden, chips are cosmetic + selectbox is real
+            if len(top_cat_names) > 1:
+                selected_top = st.selectbox(
+                    "Filter",
+                    ["All"] + top_cat_names,
+                    label_visibility="collapsed",
+                    key="lib_filter",
+                )
+            else:
+                selected_top = "All"
+
             show_tops = top_cat_names if selected_top == "All" else [selected_top]
+
+            TYPE_BADGE_COLORS = {
+                "single": ("rgba(0,85,255,0.15)", "#0055FF"),
+                "primer": ("rgba(1,24,69,0.85)", "#FFFFFF"),
+                "document": ("rgba(16,122,60,0.15)", "#1A7A3C"),
+            }
+
             for top in show_tops:
                 vids = top_categories[top]
-                st.markdown(f"""
-                <div class="s-section-divider">
-                    <span>{top.upper()}</span>
-                    <span class="s-section-count">{len(vids)}</span>
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f'<div class="lib-cat-label">{top} &nbsp;·&nbsp; {len(vids)} video{"s" if len(vids) != 1 else ""}</div>', unsafe_allow_html=True)
 
-                for i, vid in enumerate(vids):
-                    is_active = (st.session_state.play_video and
-                                 st.session_state.play_video.get("path") == vid["path"])
-                    border = "border-left:3px solid #0055FF;" if is_active else ""
-                    dur = _video_duration_str(vid["path"])
+                # Render in rows of 3 using columns
+                chunk_size = 3
+                for row_start in range(0, len(vids), chunk_size):
+                    chunk = vids[row_start:row_start + chunk_size]
+                    cols = st.columns(len(chunk))
+                    for col, (i, vid) in zip(cols, enumerate(chunk, start=row_start)):
+                        with col:
+                            is_active = (
+                                st.session_state.play_video and
+                                st.session_state.play_video.get("path") == vid["path"]
+                            )
+                            active_cls = "lib-active" if is_active else ""
+                            dur = _video_duration_str(vid["path"])
 
-                    st.markdown(f"""
-                    <div class="s-vcard" style="{border}">
-                        <div class="s-vcard-body" style="padding:14px 18px">
-                            <div class="s-vcard-cat">{top.upper()}</div>
-                            <div class="s-vcard-title" style="font-size:13px">{vid['name']}</div>
-                            <div class="s-vcard-meta">{dur + ' &middot; ' if dur else ''}{vid['size_mb']:.1f} MB</div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    if st.button("Play", key=f"lib_{top}_{i}"):
-                        st.session_state.play_video = vid
-                        st.rerun()
+                            # Detect type from category
+                            cat_lower = vid["category"].lower()
+                            if "single" in cat_lower or "direct" in cat_lower:
+                                badge_bg, badge_col = "rgba(0,85,255,0.15)", "#0055FF"
+                                type_label = "Single"
+                            elif "document" in cat_lower:
+                                badge_bg, badge_col = "rgba(16,122,60,0.15)", "#1A7A3C"
+                                type_label = "Doc"
+                            else:
+                                badge_bg, badge_col = "rgba(1,24,69,0.85)", "#FFFFFF"
+                                type_label = "Primer"
+
+                            st.markdown(f"""
+                            <div class="lib-card {active_cls}">
+                                <div class="lib-thumb">
+                                    <div class="lib-type-badge" style="background:{badge_bg};color:{badge_col};">{type_label}</div>
+                                    <div class="lib-play-btn">&#9654;</div>
+                                    {f'<div class="lib-dur-badge">{dur}</div>' if dur else ''}
+                                </div>
+                                <div class="lib-body">
+                                    <div class="lib-title">{vid['name']}</div>
+                                    <div class="lib-meta">
+                                        <span>{vid['size_mb']:.1f} MB</span>
+                                    </div>
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                            btn_label = "▶ Now Playing" if is_active else "▶ Play"
+                            if st.button(btn_label, key=f"lib_{top}_{i}", use_container_width=True):
+                                st.session_state.play_video = vid
+                                st.rerun()
 
         with right_col:
+            st.markdown('<div class="lib-player-wrap">', unsafe_allow_html=True)
+
             if st.session_state.play_video and os.path.exists(st.session_state.play_video["path"]):
                 vid = st.session_state.play_video
-                st.markdown('<div class="s-player-frame">', unsafe_allow_html=True)
+                dur = _video_duration_str(vid["path"])
+                meta_parts = [p for p in [vid["category"].title(), dur, f"{vid['size_mb']:.1f} MB"] if p]
+
+                st.markdown(f"""
+                <div class="lib-player-header">
+                    <div class="lib-player-title">{vid['name']}</div>
+                    <div class="lib-player-sub">{" &nbsp;·&nbsp; ".join(meta_parts)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
                 with open(vid["path"], "rb") as f:
                     st.video(f.read())
-                st.markdown('</div>', unsafe_allow_html=True)
 
-                dur = _video_duration_str(vid["path"])
-                st.markdown(f"""
-                <div class="s-player-info">
-                    <div class="s-player-title">{vid['name']}</div>
-                    <div class="s-player-sub">{vid['category'].title()} &middot; {dur + ' &middot; ' if dur else ''}{vid['size_mb']:.1f} MB</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                with open(vid["path"], "rb") as f:
-                    st.download_button(
-                        "Download MP4",
-                        f.read(),
-                        file_name=os.path.basename(vid["path"]),
-                        mime="video/mp4",
-                        key="lib_dl",
-                    )
+                dl_col, _ = st.columns([1, 1])
+                with dl_col:
+                    with open(vid["path"], "rb") as f:
+                        st.download_button(
+                            "⬇ Download MP4",
+                            f.read(),
+                            file_name=os.path.basename(vid["path"]),
+                            mime="video/mp4",
+                            key="lib_dl",
+                            use_container_width=True,
+                        )
             else:
                 st.markdown("""
-                <div class="s-empty" style="margin-top:20px">
-                    <div class="s-empty-icon">&#9654;</div>
-                    <div class="s-empty-title">Select a video</div>
-                    <div class="s-empty-sub">Click Play on any video from the list.</div>
+                <div class="lib-player-placeholder">
+                    <div class="lib-placeholder-icon">&#9654;</div>
+                    <div class="lib-placeholder-text">Select a video to play</div>
                 </div>
                 """, unsafe_allow_html=True)
+
+            st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

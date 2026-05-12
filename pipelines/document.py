@@ -26,73 +26,39 @@ logger = get_logger(__name__)
 
 # ── Claude prompt for slide planning ─────────────────────────────────────────
 
-_PLAN_PROMPT = """You are an expert curriculum designer creating a DETAILED, THOROUGH slide deck for a pre-recorded educational video walkthrough.
+_PLAN_PROMPT = """You are an expert curriculum designer creating an educational video slide deck.
 
 TOPIC: {topic}
 
-DOCUMENT CONTENT (3 sections):
---- PROBLEM STATEMENT ---
-{problem_statement}
+INSTRUCTOR INSTRUCTIONS:
+{instructions}
 
---- DATASET DESCRIPTION ---
-{dataset_description}
+DOCUMENT CONTENT:
+{document_content}
 
---- APPROACH DOCUMENT ---
-{approach_document}
-
-YOUR TASK: Create a comprehensive slide-by-slide lesson plan covering EVERY section of the document in depth. This should be a long, detailed video — not a summary.
-
-REQUIRED SLIDE STRUCTURE (follow this order):
-
-SECTION A — Problem Context (3-4 slides):
-  - Why driver safety matters (real-world stats, motivation)
-  - The specific problem we're solving
-  - What the final system looks like (edge deployment, real-time inference)
-  - What students will learn from this case study
-
-SECTION B — Dataset Deep Dive (3-4 slides):
-  - Dataset overview (source, how it was created, Viola-Jones extraction)
-  - Class labels, data splits, image format details
-  - Key things to watch out for (test set separation, augmentation needs)
-  - Visualizing and inspecting the data before training
-
-SECTION C — Approach Walkthrough (6-8 slides):
-  - Data preparation and image preprocessing steps
-  - Understanding Dlib and face detection (HOG, why it matters)
-  - Data augmentation strategy (what augmentations and why each one helps)
-  - Why Transfer Learning and not training from scratch
-  - MobileNetV2 architecture choice and custom head
-  - Two-phase training strategy (freeze then fine-tune)
-  - Evaluation metrics — which ones matter most for safety and why
-  - Edge deployment with TFLite (quantization, model compression)
-
-SECTION D — Business Questions as Thinking Exercises (4-6 slides):
-  - Group related questions (2-3 per slide)
-  - Present each question clearly with a HINT that guides thinking
-  - Do NOT give answers — frame as "here's how to think about this"
-
-SECTION E — Evaluation Criteria & Wrap-up (2-3 slides):
-  - What evaluators will look for
-  - Submission guidelines
-  - Summary + motivational closing ("you've got this, start coding!")
+YOUR TASK:
+Create a thorough slide-by-slide plan for a pre-recorded educational video.
+Follow the INSTRUCTOR INSTRUCTIONS carefully — they specify how to treat this document,
+what to include or exclude, the depth of explanation, and the tone/style expected.
 
 For each slide, provide:
 - title: short slide title (3-8 words)
 - subtitle: one-line context or empty string
 - bullets: list of 3-5 bullet points (concise, each under 15 words)
-- narration: what the instructor says out loud (80-150 words, conversational, use contractions like we'll/let's/you're/it's)
+- narration: what the instructor says out loud (80-150 words, conversational,
+  use contractions like we'll / let's / you're / it's)
 
 RULES:
-- Create as many slides as the content needs — cover everything thoroughly, don't rush or skip sections
-- Do NOT include any code, solution steps, or direct answers to business questions
+- Let the INSTRUCTOR INSTRUCTIONS drive the depth, structure, and scope entirely
 - Narration should feel like a friendly senior instructor explaining over a video call
 - Use "we", "let's", "you'll", "think about" — never robotic language
 - Each bullet should be self-contained and scannable
-- Explain jargon naturally (e.g. "HOG — that stands for Histogram of Oriented Gradients — basically...")
 - The narration should add CONTEXT and EXPLANATION beyond what's on the slide
 - Make it engaging — use rhetorical questions, analogies, real-world connections
+- Create as many slides as the content and instructions require
+- Plain JSON only, no markdown fences
 
-Respond with ONLY valid JSON — an array of slide objects:
+Respond with ONLY a valid JSON array:
 [
   {{"title": "...", "subtitle": "...", "bullets": ["..."], "narration": "..."}},
   ...
@@ -168,15 +134,21 @@ class DocumentPipeline:
     def run(
         self,
         topic: str,
-        problem_statement: str,
-        dataset_description: str,
-        approach_document: str,
+        document_content: str,
+        instructions: str,
         scribble: bool = False,
     ) -> str:
-        """Generate a video from document content. Returns the stored video path.
+        """Generate a video from any document content.
 
-        Resume-safe: if the pipeline was interrupted mid-run, re-running with
-        the same topic will skip already-completed slides and audio files.
+        Args:
+            topic: Title/name for the video.
+            document_content: The raw document text (pasted or extracted).
+            instructions: Free-form instructor instructions that guide Claude
+                          on how to structure the slides (e.g. "don't give answers",
+                          "summarize in 5 slides", "explain for beginners").
+            scribble: Whether to apply pen annotation overlays.
+
+        Resume-safe: re-running with the same topic skips completed slides/audio.
         """
         if not self.call_llm:
             raise ValueError("DocumentPipeline requires call_llm (Claude) — no LLM configured")
@@ -199,9 +171,7 @@ class DocumentPipeline:
                     with open(plan_cache_path) as f:
                         slide_plan = json.load(f)
                 else:
-                    slide_plan = self._plan_slides(
-                        topic, problem_statement, dataset_description, approach_document
-                    )
+                    slide_plan = self._plan_slides(topic, document_content, instructions)
                     with open(plan_cache_path, "w") as f:
                         json.dump(slide_plan, f)
             logger.info(f"  {len(slide_plan)} slides planned ({plan_timer.elapsed:.1f}s)")
@@ -323,13 +293,12 @@ class DocumentPipeline:
             logger.error(f"=== Document Pipeline FAILED — {e} ===")
             raise
 
-    def _plan_slides(self, topic, problem_statement, dataset_description, approach_document):
-        """Ask Claude to structure the document into slides."""
+    def _plan_slides(self, topic, document_content, instructions):
+        """Ask Claude to structure the document into slides per the instructions."""
         prompt = _PLAN_PROMPT.format(
             topic=topic,
-            problem_statement=problem_statement,
-            dataset_description=dataset_description,
-            approach_document=approach_document,
+            instructions=instructions,
+            document_content=document_content,
         )
         response = self.call_llm(prompt)
         clean = response.strip()

@@ -15,6 +15,11 @@ os.chdir(PROJECT_ROOT)
 
 import streamlit as st
 
+VOICE_MAP = {
+    "Shivank Sir": "7M69Y78mYqPLZS5ZZSTT",
+    "Anshuman Sir": "SEUfK8UWvlGZ28kz31ts"
+}
+
 st.set_page_config(
     page_title="Scaler Primer — AI Video Generator",
     page_icon="🎓",
@@ -252,6 +257,8 @@ if page == "Generate Video":
     with ac2:
         app_animation = st.toggle("Animations (Manim)", value=False, key="app_animation", disabled=True, help="Temporarily disabled")
 
+    app_voice = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="app_voice")
+
     if st.button("Generate Video", type="primary", key="dv_run"):
         if not topic.strip():
             st.error("Please enter a topic.")
@@ -265,10 +272,9 @@ if page == "Generate Video":
             slide_generator = GrootSlideGenerator(cookies=GROOT_COOKIES)
             try:
                 el_api_key = st.secrets["ELEVENLABS_API_KEY"]
-                el_voice_id = st.secrets["ELEVENLABS_VOICE_ID"]
             except Exception:
                 el_api_key = ELEVENLABS_API_KEY
-                el_voice_id = ELEVENLABS_VOICE_ID
+            el_voice_id = VOICE_MAP[app_voice]
             tts = ElevenLabsTTS(api_key=el_api_key, voice_id=el_voice_id)
             video_assembler = FFmpegVideoAssembler(temp_dir=TEMP_DIR)
             storage = LocalStorage(base_path=OUTPUT_DIR)
@@ -331,43 +337,47 @@ if page == "Generate Video":
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "Generate from Document":
     st.title("Generate Video from Document")
-    st.markdown("Paste content from a case study or assignment document. Claude will structure it into a guided video walkthrough.")
+    st.markdown("Paste any document and tell the AI how to structure the video — case studies, assignments, syllabi, papers, and more.")
     st.markdown("---")
 
     doc_topic = st.text_input(
-        "Case Study / Topic Name",
-        value="Driver Drowsiness Detection System",
+        "Video Title",
+        placeholder="e.g. Driver Drowsiness Detection — Case Study",
         key="doc_topic",
     )
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        problem_statement = st.text_area(
-            "Problem Statement",
-            height=250,
-            key="doc_problem",
-            placeholder="Paste the problem statement here...",
-        )
-    with col_b:
-        dataset_description = st.text_area(
-            "Dataset Description",
-            height=250,
-            key="doc_dataset",
-            placeholder="Paste the dataset description here...",
-        )
+    doc_content_input = st.text_area(
+        "Document Content",
+        height=300,
+        max_chars=25000,
+        key="doc_content",
+        placeholder="Paste the full document text here (problem statement, approach, syllabus, assignment, paper, notes...)",
+    )
 
-    approach_document = st.text_area(
-        "Approach Document",
-        height=250,
-        key="doc_approach",
-        placeholder="Paste the approach / methodology document here...",
+    doc_instructions_input = st.text_area(
+        "Video Generation Instructions",
+        height=150,
+        max_chars=1000,
+        key="doc_instructions",
+        placeholder=(
+            'e.g. "Explain this document for beginner students."\n'
+            'e.g. "This is an assignment — give hints but don\'t reveal the answers."\n'
+            'e.g. "Cover only the key concepts, keep it to 5 slides."\n'
+            'e.g. "This is a research paper — explain it in simple, intuitive terms."'
+        ),
     )
 
     doc_scribble = st.toggle("Pen Annotations (Scribble)", value=False, key="doc_scribble")
+    
+    doc_voice = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="doc_voice")
 
     if st.button("Generate Document Video", type="primary", key="doc_run"):
-        if not problem_statement.strip() or not approach_document.strip():
-            st.error("Please provide at least the Problem Statement and Approach Document.")
+        if not doc_topic.strip():
+            st.error("Please enter a video title.")
+        elif not doc_content_input.strip():
+            st.error("Please paste your document content.")
+        elif not doc_instructions_input.strip():
+            st.error("Please add instructions so the AI knows how to structure the video.")
         else:
             from pipelines.document import DocumentPipeline
             from modules.tts.elevenlabs import ElevenLabsTTS
@@ -378,8 +388,8 @@ elif page == "Generate from Document":
             from dotenv import dotenv_values
             _env = dotenv_values(os.path.join(PROJECT_ROOT, ".env"))
             el_api_key = _env.get("ELEVENLABS_API_KEY", "") or ELEVENLABS_API_KEY
-            el_voice_id = _env.get("ELEVENLABS_VOICE_ID", "") or ELEVENLABS_VOICE_ID
-            st.info(f"ElevenLabs: key={'SET' if el_api_key else 'EMPTY'}, voice={el_voice_id[:8]}...")
+            el_voice_id = VOICE_MAP[doc_voice]
+            st.info(f"ElevenLabs: key={'SET' if el_api_key else 'EMPTY'}, voice={doc_voice}")
             tts = ElevenLabsTTS(api_key=el_api_key, voice_id=el_voice_id)
 
             video_assembler = FFmpegVideoAssembler(temp_dir=TEMP_DIR)
@@ -424,9 +434,8 @@ elif page == "Generate from Document":
                 with st.spinner(f"Generating document video for '{doc_topic}'... this may take a few minutes."):
                     video_path = pipeline.run(
                         topic=doc_topic,
-                        problem_statement=problem_statement,
-                        dataset_description=dataset_description or "(No dataset description provided)",
-                        approach_document=approach_document,
+                        document_content=doc_content_input,
+                        instructions=doc_instructions_input,
                         scribble=doc_scribble,
                     )
 

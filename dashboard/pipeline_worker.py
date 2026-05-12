@@ -81,7 +81,7 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, res
             json.dump({"status": "error", "error": str(e)}, f)
 
 
-def run_document(topic, problem, dataset, approach, el_k, el_v, llm_key, scribble, result_path, progress_path):
+def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scribble, result_path, progress_path):
     sys.path.insert(0, PROJECT_ROOT)
     os.chdir(PROJECT_ROOT)
     try:
@@ -119,9 +119,12 @@ def run_document(topic, problem, dataset, approach, el_k, el_v, llm_key, scribbl
             storage=LocalStorage(base_path=session_dir),
             call_llm=call_llm, temp_dir=TEMP_DIR, output_dir=OUTPUT_DIR,
         )
-        video_path = pipeline.run(topic=topic, problem_statement=problem,
-                                  dataset_description=dataset, approach_document=approach,
-                                  scribble=scribble)
+        video_path = pipeline.run(
+            topic=topic,
+            document_content=document_content,
+            instructions=instructions,
+            scribble=scribble,
+        )
         _write_progress(progress_path, "Done", "Video ready!")
         with open(result_path, "w") as f:
             json.dump({"status": "ok", "path": video_path}, f)
