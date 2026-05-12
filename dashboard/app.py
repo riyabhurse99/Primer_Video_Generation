@@ -7,6 +7,7 @@ Run with: streamlit run dashboard/app.py
 import sys
 import os
 import json
+import re
 
 # Ensure project root is on Python path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,6 +15,16 @@ sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 
 import streamlit as st
+
+
+def _sanitize_error(msg: str) -> str:
+    """Strip potential API key fragments and truncate error messages for safe display."""
+    if not msg:
+        return ""
+    # Redact anything that looks like a token: 20+ char alphanumeric strings
+    msg = re.sub(r'[A-Za-z0-9_\-]{20,}', '[REDACTED]', msg)
+    return msg[:200]
+
 
 VOICE_MAP = {
     "Shivank Sir": "7M69Y78mYqPLZS5ZZSTT",
@@ -295,7 +306,7 @@ if page == "Generate Video":
                             max_tokens=2048,
                             messages=[{"role": "user", "content": prompt}],
                         )
-                        return msg.content[0].text
+                        return "".join(b.text for b in msg.content if hasattr(b, "text"))
                 else:
                     _call_llm = None
             except Exception:
@@ -412,7 +423,7 @@ elif page == "Generate from Document":
                             max_tokens=16000,
                             messages=[{"role": "user", "content": prompt}],
                         )
-                        return msg.content[0].text
+                        return "".join(b.text for b in msg.content if hasattr(b, "text"))
             except Exception:
                 pass
 
@@ -879,7 +890,7 @@ elif page == "Metrics":
                 "Groot API Calls": r["groot_api_calls"],
                 "Video Duration (s)": r["video_duration_seconds"],
                 "Size (MB)": r["video_size_mb"],
-                "Error": r.get("error") or "",
+                "Error": _sanitize_error(r.get("error") or ""),
             })
 
         st.dataframe(table_rows, use_container_width=True)

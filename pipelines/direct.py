@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import uuid
 from modules.groot.generator import GrootSlideGenerator
 from modules.tts.base import BaseTTS
 from modules.video_assembler.base import BaseVideoAssembler
@@ -45,7 +46,8 @@ class DirectPipeline:
         pipeline_start = time.time()
 
         safe_topic = topic.replace(" ", "_").replace("/", "-")[:50]
-        video_temp_dir = os.path.join(self.temp_dir, f"direct_{safe_topic}")
+        job_id = uuid.uuid4().hex[:8]
+        video_temp_dir = os.path.join(self.temp_dir, f"direct_{safe_topic}_{job_id}")
         os.makedirs(video_temp_dir, exist_ok=True)
 
         try:
@@ -181,7 +183,7 @@ class DirectPipeline:
                 groot_api_calls=groot_api_calls,
                 slides_generated=len(images),
                 fallback_slides=fallback_slides,
-                tts_provider="elevenlabs",
+                tts_provider=type(self.tts).__name__,
                 video_duration_seconds=video_duration,
                 video_size_mb=video_size_mb,
                 evals=evals_result,

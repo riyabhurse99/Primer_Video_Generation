@@ -27,6 +27,8 @@ import random
 import re
 import string
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -342,6 +344,17 @@ class GrootAPIClient:
         self.session.headers.update(_GROOT_HEADERS)
         if cookies:
             self.session.headers["Cookie"] = cookies
+
+        _retry = Retry(
+            total=3,
+            backoff_factor=1,          # waits: 0s, 1s, 2s
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST"],
+            raise_on_status=False,     # let raise_for_status() handle it after retries
+        )
+        _adapter = HTTPAdapter(max_retries=_retry)
+        self.session.mount("https://", _adapter)
+        self.session.mount("http://", _adapter)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Stage Construction (client-side, matches browser behaviour)

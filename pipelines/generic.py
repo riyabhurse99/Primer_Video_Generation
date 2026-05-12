@@ -132,6 +132,9 @@ class GenericPrimerPipeline:
                 try:
                     context = f"generic/{input.course}/{input.group_level}/{section.name}"
                     video_path = self._generate_single_video(video_script, context)
+                    if video_path is None:
+                        logger.warning(f"  Skipping {video_script.topic} — no video produced")
+                        continue
                     generated_videos.append(GeneratedVideo(
                         section=section.name,
                         topic=video_script.topic,

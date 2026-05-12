@@ -163,7 +163,8 @@ Curriculum:
         )
         if response.stop_reason == "max_tokens":
             logger.warning("Generic plan response was truncated (max_tokens hit) — JSON may be incomplete")
-        return self._parse_response(response.content[0].text, input.course, input.group_level)
+        raw = "".join(b.text for b in response.content if hasattr(b, "text"))
+        return self._parse_response(raw, input.course, input.group_level)
 
     def generate_dynamic_plan(self, input: QuestionnaireInput) -> PrimerPlan:
         logger.info(f"Generating dynamic plan — course={input.course}, level={input.group_level}")
@@ -185,4 +186,5 @@ Student Questionnaire Answers:
         )
         if response.stop_reason == "max_tokens":
             logger.warning("Dynamic plan response was truncated (max_tokens hit) — JSON may be incomplete")
-        return self._parse_response(response.content[0].text, input.course, input.group_level)
+        raw = "".join(b.text for b in response.content if hasattr(b, "text"))
+        return self._parse_response(raw, input.course, input.group_level)

@@ -375,6 +375,52 @@ def _parse_json(response: str, context: str):
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def run_slide_evals(
+    topic: str,
+    narrations: list,
+    level: str,
+    call_llm,
+):
+    """Run only slide-level evals. Returns the slides list or None on failure."""
+    level_key = level if level in _SLIDE_QUALITY_CRITERIA else "generic"
+    try:
+        prompt = _build_slide_eval_prompt(topic, narrations, level_key)
+        response = call_llm(prompt)
+        parsed = _parse_json(response, "slide_eval")
+        if parsed and "slides" in parsed:
+            flagged = sum(1 for s in parsed["slides"] if s.get("needs_regeneration"))
+            logger.info(f"Slide evals complete — {flagged}/{len(narrations)} flagged for regeneration")
+            return parsed["slides"]
+        logger.warning("Slide eval returned unexpected structure")
+    except Exception as e:
+        logger.error(f"Slide eval failed: {e}")
+    return None
+
+
+def run_lecture_eval(
+    topic: str,
+    narrations: list,
+    level: str,
+    call_llm,
+):
+    """Run only lecture-level eval. Returns the parsed dict or None on failure."""
+    level_key = level if level in _LECTURE_APPROPRIATENESS_CRITERIA else "generic"
+    try:
+        prompt = _build_lecture_eval_prompt(topic, narrations, level_key)
+        response = call_llm(prompt)
+        parsed = _parse_json(response, "lecture_eval")
+        if parsed and "overall_score" in parsed:
+            logger.info(
+                f"Lecture eval complete — overall={parsed['overall_score']} "
+                f"pass={parsed.get('pass')} missing={parsed.get('missing_concepts')}"
+            )
+            return parsed
+        logger.warning("Lecture eval returned unexpected structure")
+    except Exception as e:
+        logger.error(f"Lecture eval failed: {e}")
+    return None
+
+
 def run_evals(
     topic: str,
     narrations: list,
@@ -404,49 +450,11 @@ def run_evals(
     level_key = level if level in _SLIDE_QUALITY_CRITERIA else "generic"
     logger.info(f"Running evals — topic='{topic}' level={level_key} slides={len(narrations)}")
 
-    result = {
+    return {
         "level": level_key,
-        "slide_evals": None,
-        "lecture_eval": None,
+        "slide_evals": run_slide_evals(topic, narrations, level_key, call_llm),
+        "lecture_eval": run_lecture_eval(topic, narrations, level_key, call_llm),
     }
-
-    # ── Eval 1: Per-slide quality ─────────────────────────────────────────────
-    try:
-        slide_prompt = _build_slide_eval_prompt(topic, narrations, level_key)
-        slide_response = call_llm(slide_prompt)
-        parsed = _parse_json(slide_response, "slide_eval")
-        if parsed and "slides" in parsed and len(parsed["slides"]) == len(narrations):
-            result["slide_evals"] = parsed["slides"]
-            flagged = sum(1 for s in parsed["slides"] if s.get("needs_regeneration"))
-            logger.info(f"Slide evals complete — {flagged}/{len(narrations)} flagged for regeneration")
-        elif parsed and "slides" in parsed:
-            result["slide_evals"] = parsed["slides"]
-            logger.warning(
-                f"Slide eval returned {len(parsed['slides'])} entries "
-                f"(expected {len(narrations)}) — storing anyway"
-            )
-        else:
-            logger.warning("Slide eval returned unexpected structure")
-    except Exception as e:
-        logger.error(f"Slide eval failed: {e}")
-
-    # ── Eval 2: Overall lecture quality ───────────────────────────────────────
-    try:
-        lecture_prompt = _build_lecture_eval_prompt(topic, narrations, level_key)
-        lecture_response = call_llm(lecture_prompt)
-        parsed = _parse_json(lecture_response, "lecture_eval")
-        if parsed and "overall_score" in parsed:
-            result["lecture_eval"] = parsed
-            logger.info(
-                f"Lecture eval complete — overall={parsed['overall_score']} "
-                f"pass={parsed.get('pass')} missing={parsed.get('missing_concepts')}"
-            )
-        else:
-            logger.warning("Lecture eval returned unexpected structure")
-    except Exception as e:
-        logger.error(f"Lecture eval failed: {e}")
-
-    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -601,20 +609,16 @@ def eval_and_improve(
         logger.info("Eval loop skipped — no LLM configured")
         return narrations, None
 
-    final_result = None
+    level_key = level if level in _SLIDE_QUALITY_CRITERIA else "generic"
+    slide_evals = None
 
     for attempt in range(1, MAX_EVAL_RETRIES + 1):
         logger.info(f"Eval loop — attempt {attempt}/{MAX_EVAL_RETRIES}")
 
-        # Run slide-level evals only (lecture eval runs once at the end)
-        evals_result = run_evals(topic, narrations, level, call_llm)
-        if evals_result is None:
+        slide_evals = run_slide_evals(topic, narrations, level_key, call_llm)
+        if slide_evals is None:
             return narrations, None
 
-        final_result = evals_result
-        slide_evals = evals_result.get("slide_evals") or []
-
-        # Find slides that need regeneration
         flagged = [s for s in slide_evals if s.get("needs_regeneration")]
 
         if not flagged:
@@ -633,9 +637,8 @@ def eval_and_improve(
             )
             break
 
-        # Improve each flagged narration
         for s in flagged:
-            idx = s["slide"] - 1  # 0-indexed
+            idx = s["slide"] - 1
             if 0 <= idx < len(narrations):
                 narrations[idx] = improve_narration(
                     topic=topic,
@@ -648,8 +651,14 @@ def eval_and_improve(
                     call_llm=call_llm,
                 )
 
-    # Add retry count to the result
-    if final_result:
-        final_result["eval_retries"] = attempt
+    # Lecture eval runs once — on the final narrations after all retries
+    lecture_eval = run_lecture_eval(topic, narrations, level_key, call_llm)
+
+    final_result = {
+        "level": level_key,
+        "slide_evals": slide_evals,
+        "lecture_eval": lecture_eval,
+        "eval_attempts": attempt,
+    }
 
     return narrations, final_result

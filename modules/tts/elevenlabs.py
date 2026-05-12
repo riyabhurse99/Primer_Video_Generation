@@ -2,6 +2,8 @@ import os
 import json
 import base64
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from modules.tts.base import BaseTTS
 from utils.logger import get_logger
 
@@ -35,6 +37,17 @@ class ElevenLabsTTS(BaseTTS):
             "Content-Type": "application/json",
         }
 
+        _retry = Retry(
+            total=3,
+            backoff_factor=1,          # waits: 0s, 1s, 2s
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST"],
+            raise_on_status=False,
+        )
+        self._session = requests.Session()
+        self._session.mount("https://", HTTPAdapter(max_retries=_retry))
+        self._session.mount("http://", HTTPAdapter(max_retries=_retry))
+
     @staticmethod
     def _st_secret(key):
         try:
@@ -60,12 +73,12 @@ class ElevenLabsTTS(BaseTTS):
 
         # Try with-timestamps endpoint first; fall back to basic if not available
         url = ELEVENLABS_TTS_URL.format(voice_id=self.voice_id)
-        response = requests.post(url, headers=self.headers, json=payload, timeout=60)
+        response = self._session.post(url, headers=self.headers, json=payload, timeout=60)
 
         if response.status_code == 401:
             logger.warning("with-timestamps endpoint returned 401 — falling back to basic TTS endpoint")
             url = ELEVENLABS_TTS_URL_BASIC.format(voice_id=self.voice_id)
-            response = requests.post(url, headers=self.headers, json=payload, timeout=60)
+            response = self._session.post(url, headers=self.headers, json=payload, timeout=60)
             response.raise_for_status()
             with open(output_path, "wb") as f:
                 f.write(response.content)
