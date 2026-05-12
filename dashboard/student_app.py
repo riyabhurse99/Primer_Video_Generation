@@ -323,7 +323,7 @@ def _render_gen_history(context: str = "generate"):
         # ── Video list ────────────────────────────────────────────────────────
         if sections:
             # Grouped by section (Personalized Primer)
-            for section_name, svids in sections.items():
+            for si, (section_name, svids) in enumerate(sections.items()):
                 st.markdown(f"""
                 <div style="padding:10px 20px 4px 20px;background:var(--panel);
                             font-size:10px;font-weight:700;letter-spacing:1.5px;
@@ -332,7 +332,7 @@ def _render_gen_history(context: str = "generate"):
                 </div>
                 """, unsafe_allow_html=True)
                 for vi, vid in enumerate(svids):
-                    _render_video_row(vid, f"{context}_{idx}_s{vi}", show_player=(context == "generate"))
+                    _render_video_row(vid, f"{context}_{idx}_sec{si}_v{vi}", show_player=(context == "generate"))
         else:
             for vi, vid in enumerate(videos):
                 _render_video_row(vid, f"{context}_{idx}_v{vi}", show_player=True)
