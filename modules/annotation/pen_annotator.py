@@ -32,6 +32,7 @@ LINE_COLOR = (220, 30, 30, 200)          # vivid red
 LINE_WIDTH = 4                           # thin, clean line
 STROKE_WOBBLE = 3                        # max vertical wobble (pixels)
 UNDERLINE_OFFSET = 20                    # pixels below the element bottom edge (clear of text)
+STROKE_OVERSHOOT = 8                     # pixels to extend past text edges for natural pen feel
 
 # Circle padding
 CIRCLE_PADDING = 14                      # pixels of padding around circled elements
@@ -121,22 +122,47 @@ def _draw_circle_bracket(draw, box: tuple, seed: float, progress: float = 1.0):
 
 def _draw_stroke(draw, box: tuple, seed: float, progress: float = 1.0):
     """
-    Draw a thin underline stroke under `box`, from left edge to `progress` fraction.
-    Same line style as circle/bracket — clean, uniform width.
+    Draw a hand-drawn underline under `box`, from left to `progress` fraction.
+    Natural overshoot past text edges, tapered ends, smooth polyline middle.
     """
     x1, y1, x2, y2 = box
     y_base = y2 + UNDERLINE_OFFSET
-    x_end = x1 + int((x2 - x1) * progress)
 
-    step = 3  # pixel step between stroke sample points
+    x_start = max(0, x1 - STROKE_OVERSHOOT)
+    x_full_end = x2 + STROKE_OVERSHOOT
+    x_end = x_start + int((x_full_end - x_start) * progress)
+
+    step = 3
     points = []
-    for x in range(x1, x_end, step):
+    for x in range(x_start, x_end, step):
         y = _wobble_y(x, y_base, seed)
         points.append((x, y))
 
-    # Draw connected segments — uniform thin line
-    for i in range(len(points) - 1):
-        draw.line([points[i], points[i + 1]], fill=LINE_COLOR, width=LINE_WIDTH)
+    if len(points) < 2:
+        return
+
+    n = len(points)
+    taper_pts = max(3, n // 8)
+
+    mid_start = min(taper_pts, n - 1)
+    mid_end = max(mid_start, n - taper_pts)
+
+    # Smooth middle section as a single polyline (avoids alpha double-stacking at joints).
+    # Slice excludes mid_end so the boundary segments belong solely to the taper loops.
+    if mid_end > mid_start + 1:
+        draw.line(points[mid_start : mid_end], fill=LINE_COLOR, width=LINE_WIDTH, joint="curve")
+
+    # Taper at start: width ramps 1 → LINE_WIDTH
+    for i in range(min(taper_pts, n - 1)):
+        t = i / max(1, taper_pts - 1)
+        w = max(1, round(1 + (LINE_WIDTH - 1) * t))
+        draw.line([points[i], points[i + 1]], fill=LINE_COLOR, width=w)
+
+    # Taper at end: width ramps LINE_WIDTH → 1
+    for i in range(max(0, n - taper_pts - 1), n - 1):
+        t = (n - 2 - i) / max(1, taper_pts - 1)
+        w = max(1, round(1 + (LINE_WIDTH - 1) * t))
+        draw.line([points[i], points[i + 1]], fill=LINE_COLOR, width=w)
 
 
 # ── Pre-compute annotated stages ─────────────────────────────────────────────

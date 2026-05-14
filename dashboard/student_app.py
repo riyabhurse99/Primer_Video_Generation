@@ -12,10 +12,10 @@ import json
 import time as _time
 import multiprocessing
 
-# Must be set before any multiprocessing usage.
-# "fork" avoids re-importing this Streamlit module in child processes (macOS default is "spawn").
+# Use "spawn" on macOS — forking after Streamlit starts ObjC threads crashes the process.
+# pipeline_worker.py does not import streamlit, so spawn is safe.
 if sys.platform == "darwin":
-    multiprocessing.set_start_method("fork", force=True)
+    multiprocessing.set_start_method("spawn", force=True)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -140,6 +140,7 @@ def _cancel_generation():
     st.session_state.gen_process = None
     st.session_state.gen_result_path = None
     st.session_state.gen_progress_path = None
+    # gen_log_path intentionally kept — partial log stays visible after cancel
 
 
 def _start_process(target, args):
@@ -147,11 +148,13 @@ def _start_process(target, args):
     import multiprocessing, tempfile
     result_file = tempfile.mktemp(suffix=".json")
     progress_file = tempfile.mktemp(suffix=".json")
-    p = multiprocessing.Process(target=target, args=args + (result_file, progress_file), daemon=True)
+    log_file = tempfile.mktemp(suffix=".jsonl")
+    p = multiprocessing.Process(target=target, args=args + (result_file, progress_file, log_file), daemon=True)
     p.start()
     st.session_state.gen_process = p
     st.session_state.gen_result_path = result_file
     st.session_state.gen_progress_path = progress_file
+    st.session_state.gen_log_path = log_file
 
 
 def _read_progress() -> dict:
@@ -177,6 +180,156 @@ def _read_result() -> dict | None:
         return data
     except Exception:
         return None
+
+
+def _read_log_events() -> list:
+    from utils.run_logger import read_events
+    return read_events(st.session_state.get("gen_log_path"))
+
+
+def _render_log_section(events: list, title: str = "Generation Log"):
+    """Render structured run events as a readable monospace log block."""
+    if not events:
+        st.caption("No events yet…")
+        return
+
+    rows = []
+    for e in events:
+        ts = e.get("ts", "")
+        etype = e.get("type", "")
+
+        if etype == "step":
+            badge_color = "#4A9EFF"
+            badge = "STEP"
+            detail = e.get("detail", "")
+            msg = f"{e.get('step', '')}" + (f" &nbsp;·&nbsp; {detail}" if detail else "")
+
+        elif etype == "api_call":
+            api = e.get("api", "")
+            dur = e.get("duration_ms", 0)
+            dur_str = f"{dur / 1000:.1f}s" if dur >= 500 else f"{dur}ms"
+            status = e.get("status", "ok")
+
+            if api == "claude":
+                badge_color = "#EF4444" if status == "error" else "#A78BFA"
+                badge = "CLAUDE"
+                purpose = e.get("purpose", "content")
+                tin = e.get("tokens_in", 0)
+                tout = e.get("tokens_out", 0)
+                full_out = (e.get("output_summary") or "").replace("<", "&lt;")
+                if purpose in ("content", "eval:improve"):
+                    # Show up to 300 chars — enough to read a full narration snippet
+                    out_prev = full_out[:300]
+                    ellipsis = "…" if len(full_out) > 300 else ""
+                    msg = (f"[{purpose}] &nbsp;·&nbsp; {dur_str}"
+                           f" &nbsp;·&nbsp; {tin}→{tout} tokens"
+                           + (f'<br><span style="color:#94A3B8;font-size:10px;padding-left:4px">'
+                              f'OUT: <i>"{out_prev}{ellipsis}"</i></span>' if out_prev else ""))
+                else:
+                    out_prev = full_out[:80]
+                    msg = (f"[{purpose}] &nbsp;·&nbsp; {dur_str}"
+                           f" &nbsp;·&nbsp; {tin}→{tout} tokens"
+                           + (f' &nbsp;·&nbsp; <i>"{out_prev}…"</i>' if out_prev else ""))
+
+            elif api == "groot":
+                badge_color = "#EF4444" if status == "error" else "#F97316"
+                badge = "GROOT"
+                endpoint = e.get("endpoint", "")
+                input_s = (e.get("input_summary") or "").replace("<", "&lt;")
+                out_s = (e.get("output_summary") or "").replace("<", "&lt;")
+                msg = f"{endpoint} &nbsp;·&nbsp; {dur_str} &nbsp;·&nbsp; <b>{input_s}</b> → {out_s}"
+
+            elif api == "elevenlabs":
+                badge_color = "#EF4444" if status == "error" else "#22C55E"
+                badge = "EL TTS"
+                chars = e.get("chars", 0)
+                audio_kb = e.get("audio_kb", 0)
+                msg = f"TTS &nbsp;·&nbsp; {dur_str} &nbsp;·&nbsp; {chars} chars → {audio_kb} KB audio"
+
+            else:
+                badge_color = "#94A3B8"
+                badge = api.upper()
+                msg = f"{e.get('endpoint', '')} &nbsp;·&nbsp; {dur_str}"
+
+        elif etype == "eval":
+            eval_type = e.get("eval_type", "")
+            if eval_type == "slide":
+                flagged = e.get("flagged", 0)
+                total = e.get("total", 0)
+                attempt = e.get("attempt", 1)
+                badge_color = "#22C55E" if flagged == 0 else "#EAB308"
+                badge = "EVAL"
+                flagged_info = ""
+                if flagged > 0:
+                    details = e.get("slide_details", [])
+                    parts = [
+                        f"slide {d['slide']} (rel={d.get('relevance')}, qual={d.get('quality')})"
+                        for d in details if d.get("needs_regen")
+                    ]
+                    flagged_info = f" &nbsp;·&nbsp; [{', '.join(parts[:3])}]"
+                msg = f"slide eval attempt {attempt} &nbsp;·&nbsp; {total} slides &nbsp;·&nbsp; {flagged} flagged{flagged_info}"
+
+            elif eval_type == "lecture":
+                passed = e.get("passed", False)
+                overall = e.get("overall_score", "?")
+                cov = e.get("coverage", "?")
+                flow = e.get("flow", "?")
+                app = e.get("appropriateness", "?")
+                verdict = (e.get("verdict") or "")[:120].replace("<", "&lt;")
+                badge_color = "#22C55E" if passed else "#EF4444"
+                badge = "EVAL"
+                status_str = "✓ PASS" if passed else "✗ FAIL"
+                msg = (f"lecture eval &nbsp;·&nbsp; {status_str} &nbsp;·&nbsp; "
+                       f"overall {overall} (cov={cov} flow={flow} app={app})"
+                       + (f' &nbsp;·&nbsp; <i>"{verdict}"</i>' if verdict else ""))
+            else:
+                badge_color = "#94A3B8"
+                badge = "EVAL"
+                msg = eval_type
+
+        elif etype == "narration_improve":
+            badge_color = "#F59E0B"
+            badge = "REWRITE"
+            slide_n = e.get("slide", "?")
+            reason = (e.get("reason") or "").replace("<", "&lt;")
+            original = (e.get("original") or "").replace("<", "&lt;")
+            improved = (e.get("improved") or "").replace("<", "&lt;")
+            msg = (
+                f"slide {slide_n} &nbsp;·&nbsp; <span style='color:#94A3B8'>{reason[:80]}</span>"
+                + (f'<br><span style="color:#64748B;font-size:10px;padding-left:4px">WAS: <i>"{original[:250]}{"…" if len(original) > 250 else ""}"</i></span>' if original else "")
+                + (f'<br><span style="color:#86EFAC;font-size:10px;padding-left:4px">NOW: <i>"{improved[:250]}{"…" if len(improved) > 250 else ""}"</i></span>' if improved else "")
+            )
+
+        elif etype == "error":
+            badge_color = "#EF4444"
+            badge = "ERROR"
+            msg = (e.get("message") or "").replace("<", "&lt;")
+
+        else:
+            badge_color = "#94A3B8"
+            badge = etype.upper()
+            msg = ""
+
+        rows.append(
+            f'<div style="display:flex;align-items:flex-start;padding:5px 0;'
+            f'border-bottom:1px solid rgba(255,255,255,0.05);">'
+            f'<span style="color:#4B5563;min-width:72px;flex-shrink:0;font-size:10px;padding-top:1px">{ts}</span>'
+            f'<span style="color:{badge_color};font-weight:700;min-width:80px;flex-shrink:0;'
+            f'font-size:10px;letter-spacing:0.5px">{badge}</span>'
+            f'<span style="color:#CBD5E1;flex:1;font-size:11px;line-height:1.5;word-break:break-word">{msg}</span>'
+            f'</div>'
+        )
+
+    st.markdown(
+        f'<div style="background:#0D1525;border:1px solid rgba(255,255,255,0.1);border-radius:8px;'
+        f'padding:14px 16px;max-height:380px;overflow-y:auto;'
+        f'font-family:\'Courier New\',Courier,monospace;">'
+        f'<div style="font-size:9px;font-weight:700;letter-spacing:2px;color:rgba(255,255,255,0.25);'
+        f'margin-bottom:10px;text-transform:uppercase">{title} &nbsp;·&nbsp; {len(events)} events</div>'
+        + "".join(rows) +
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _show_generation_status(label: str):
@@ -217,6 +370,9 @@ def _show_generation_status(label: str):
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        with st.expander("Generation Log", expanded=True):
+            _render_log_section(_read_log_events())
 
         if st.button("Stop Generation", key="cancel_gen"):
             _cancel_generation()
@@ -417,12 +573,18 @@ if "gen_scribble" not in st.session_state:
     st.session_state.gen_scribble = False
 if "gen_animation" not in st.session_state:
     st.session_state.gen_animation = False
+if "gen_lecture_eval" not in st.session_state:
+    st.session_state.gen_lecture_eval = False
+if "gen_presenter_overlay" not in st.session_state:
+    st.session_state.gen_presenter_overlay = False
 if "gen_process" not in st.session_state:
     st.session_state.gen_process = None
 if "gen_result_path" not in st.session_state:
     st.session_state.gen_result_path = None
 if "gen_progress_path" not in st.session_state:
     st.session_state.gen_progress_path = None
+if "gen_log_path" not in st.session_state:
+    st.session_state.gen_log_path = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1235,17 +1397,38 @@ elif page == "generate":
             <div class="s-video-options-label">Video Options</div>
         </div>
         """, unsafe_allow_html=True)
-        voc1, voc2 = st.columns(2)
+
+        instructor_voice = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_single")
+        is_shivank = (instructor_voice == "Shivank Sir")
+
+        voc1, voc2, voc3, voc4 = st.columns(4)
         with voc1:
             scribble = st.toggle("Pen Annotations", value=st.session_state.gen_scribble, key="tog_scribble_single")
             st.session_state.gen_scribble = scribble
         with voc2:
             animation = st.toggle("Animations (Manim)", value=False, key="tog_anim_single", disabled=True, help="Temporarily disabled")
             st.session_state.gen_animation = animation
+        with voc3:
+            lecture_eval = st.toggle(
+                "Lecture Eval",
+                value=st.session_state.gen_lecture_eval,
+                key="tog_lecture_eval_single",
+                help="After slide-level evals, runs a full-lecture quality check. If it fails, triggers one extra rewrite pass using the lecture findings. ~1 extra Claude call.",
+            )
+            st.session_state.gen_lecture_eval = lecture_eval
+        with voc4:
+            presenter_overlay = st.toggle(
+                "Presenter Avatar",
+                value=st.session_state.gen_presenter_overlay and is_shivank,
+                key="tog_avatar_single",
+                disabled=not is_shivank,
+                help="Add Shivank Sir's avatar to the corner of each slide. Only available with Shivank Sir's voice.",
+            )
+            presenter_overlay = presenter_overlay and is_shivank
+            st.session_state.gen_presenter_overlay = presenter_overlay
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        num_scenes = st.slider("Max Slides", min_value=2, max_value=8, value=4, step=1, key="slider_scenes_single")
-        instructor_voice = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_single")
+        num_scenes = st.slider("Max Slides", min_value=2, max_value=40, value=4, step=1, key="slider_scenes_single")
 
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
@@ -1260,7 +1443,7 @@ elif page == "generate":
                     from dashboard.pipeline_worker import run_single_topic
                     el_k, _ = _get_el_creds()
                     selected_voice_id = VOICE_MAP[instructor_voice]
-                    _start_process(run_single_topic, (topic, level, el_k, selected_voice_id, _get_llm_key(), scribble, animation, num_scenes))
+                    _start_process(run_single_topic, (topic, level, el_k, selected_voice_id, _get_llm_key(), scribble, animation, num_scenes, lecture_eval, presenter_overlay))
                     st.rerun()
 
     # ── Personalized Primer ───────────────────────────────────────────────────
@@ -1473,17 +1656,37 @@ elif page == "generate":
                 <div class="s-video-options-label">Video Options</div>
             </div>
             """, unsafe_allow_html=True)
-            ppc1, ppc2 = st.columns(2)
+            instructor_voice_pp = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_pp")
+            is_shivank_pp = (instructor_voice_pp == "Shivank Sir")
+
+            ppc1, ppc2, ppc3, ppc4 = st.columns(4)
             with ppc1:
                 pp_scribble = st.toggle("Pen Annotations", value=st.session_state.gen_scribble, key="tog_scribble_pp")
                 st.session_state.gen_scribble = pp_scribble
             with ppc2:
                 pp_animation = st.toggle("Animations (Manim)", value=False, key="tog_anim_pp", disabled=True, help="Temporarily disabled")
                 st.session_state.gen_animation = pp_animation
+            with ppc3:
+                pp_lecture_eval = st.toggle(
+                    "Lecture Eval",
+                    value=st.session_state.gen_lecture_eval,
+                    key="tog_lecture_eval_pp",
+                    help="After slide-level evals, runs a full-lecture quality check per video. ~1 extra Claude call per video.",
+                )
+                st.session_state.gen_lecture_eval = pp_lecture_eval
+            with ppc4:
+                pp_presenter_overlay = st.toggle(
+                    "Presenter Avatar",
+                    value=st.session_state.gen_presenter_overlay and is_shivank_pp,
+                    key="tog_avatar_pp",
+                    disabled=not is_shivank_pp,
+                    help="Add Shivank Sir's avatar to the corner of each slide. Only available with Shivank Sir's voice.",
+                )
+                pp_presenter_overlay = pp_presenter_overlay and is_shivank_pp
+                st.session_state.gen_presenter_overlay = pp_presenter_overlay
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            max_videos = st.slider("Max Videos", min_value=1, max_value=10, value=5, step=1, key="slider_max_videos_pp")
-            instructor_voice_pp = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_pp")
+            max_videos = st.slider("Max Videos", min_value=2, max_value=40, value=5, step=1, key="slider_max_videos_pp")
 
             st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
@@ -1504,7 +1707,7 @@ elif page == "generate":
                         selected_voice_id = VOICE_MAP[instructor_voice_pp]
                         _start_process(run_personalized_primer,
                                        (course, level, topics, qa_pairs, el_k, selected_voice_id, _get_llm_key(),
-                                        pp_scribble, pp_animation, max_videos))
+                                        pp_scribble, pp_animation, max_videos, pp_lecture_eval, pp_presenter_overlay))
                         st.rerun()
 
     # ── Document Video (Generic) ───────────────────────────────────────────────
@@ -1565,17 +1768,37 @@ elif page == "generate":
             <div class="s-video-options-label">Video Options</div>
         </div>
         """, unsafe_allow_html=True)
-        dvc1, dvc2 = st.columns(2)
+        instructor_voice_doc = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_doc")
+        is_shivank_doc = (instructor_voice_doc == "Shivank Sir")
+
+        dvc1, dvc2, dvc3, dvc4 = st.columns(4)
         with dvc1:
             doc_scribble = st.toggle("Pen Annotations", value=st.session_state.gen_scribble, key="tog_scribble_doc")
             st.session_state.gen_scribble = doc_scribble
         with dvc2:
             st.toggle("Animations (Manim)", value=False, key="tog_anim_doc", disabled=True,
                       help="Animations not supported in Document pipeline")
+        with dvc3:
+            doc_lecture_eval = st.toggle(
+                "Lecture Eval",
+                value=st.session_state.gen_lecture_eval,
+                key="tog_lecture_eval_doc",
+                help="After slide-level evals, runs a full-lecture quality check. ~1 extra Claude call.",
+            )
+            st.session_state.gen_lecture_eval = doc_lecture_eval
+        with dvc4:
+            doc_presenter_overlay = st.toggle(
+                "Presenter Avatar",
+                value=st.session_state.gen_presenter_overlay and is_shivank_doc,
+                key="tog_avatar_doc",
+                disabled=not is_shivank_doc,
+                help="Add Shivank Sir's avatar to the corner of each slide. Only available with Shivank Sir's voice.",
+            )
+            doc_presenter_overlay = doc_presenter_overlay and is_shivank_doc
+            st.session_state.gen_presenter_overlay = doc_presenter_overlay
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        doc_max_slides = st.slider("Max Slides", min_value=3, max_value=20, value=10, step=1, key="slider_max_slides_doc")
-        instructor_voice_doc = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_doc")
+        doc_max_slides = st.slider("Max Slides", min_value=2, max_value=40, value=10, step=1, key="slider_max_slides_doc")
 
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
@@ -1597,8 +1820,15 @@ elif page == "generate":
                     selected_voice_id = VOICE_MAP[instructor_voice_doc]
                     _start_process(run_document,
                                    (doc_topic, doc_content, doc_instructions,
-                                    el_k, selected_voice_id, _get_llm_key(), doc_scribble, doc_max_slides))
+                                    el_k, selected_voice_id, _get_llm_key(), doc_scribble, doc_max_slides,
+                                    doc_lecture_eval, doc_presenter_overlay))
                     st.rerun()
+
+    # ── Last-run log (persists until next generation starts) ─────────────────
+    log_events = _read_log_events()
+    if log_events and not st.session_state.get("gen_process"):
+        with st.expander("Last Run — Generation Log", expanded=False):
+            _render_log_section(log_events)
 
     # ── Generation history (persists until manually removed) ──────────────────
     _render_gen_history(context="generate")

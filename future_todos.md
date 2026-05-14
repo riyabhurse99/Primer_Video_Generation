@@ -35,6 +35,73 @@ Fix: use `st.session_state` to set an `is_running` flag when a job starts, disab
 
 ---
 
+## 4. Factual correctness checking in slide eval
+**File:** `utils/evals.py` — `_build_slide_eval_prompt`, `_SLIDE_QUALITY_CRITERIA`
+
+The current slide eval checks relevance and quality (clarity, level-appropriateness) but has no factual correctness dimension. For CS/ML topics, Claude can confidently generate wrong time complexities, incorrect algorithm steps, wrong API behaviours, or hallucinated library details — and the eval would not catch it.
+
+The naive fix is adding a CORRECTNESS dimension (1–5) to the slide eval with a hard rule that any factual error caps the score at 2. This is better than nothing but has a fundamental limitation: **Claude evaluating Claude for factual correctness is unreliable.** The evaluator and the generator share the same training data and the same hallucinations — if Claude hallucinated that Dijkstra runs in O(n²), there is a real chance the evaluator also "knows" it as O(n²) and flags nothing.
+
+Options to consider (in order of reliability):
+- **RAG-based generation**: ground narration generation in verified reference material (textbooks, official docs) so hallucinations are less likely in the first place
+- **Separate stronger model for fact-checking**: use a different model with a focused fact-checking prompt, ideally one with web search/tool access to verify claims
+- **Human review gate**: for technically sensitive topics (algorithms, complexity bounds, ML math), flag for a subject-matter expert before shipping
+- **Correctness dimension as a weak signal**: add it to the eval as a rough filter — it won't catch subtle errors but will catch obvious ones. Document clearly that it is not a reliable guarantee.
+
+Decision needed: what is the acceptable risk level for factual errors in student-facing content, and which approach fits the production timeline?
+
+---
+
+## 5. Inter-rater reliability check for the eval judge
+**File:** `utils/evals.py` — offline experiment, not a code change
+
+LLM judges are noisy — the same narration evaluated twice can score differently. Before trusting these scores in production at scale, run an offline variance check:
+
+1. Pick a sample of ~20 narrations across all four levels (5 per level), covering a range of quality (some clearly good, some clearly bad, some borderline).
+2. Run `run_slide_evals` on each narration 5 times independently (separate `call_llm` calls, no caching).
+3. Compute variance in `quality_score` across the 5 runs for each narration.
+4. **Threshold**: if `quality_score` varies by more than ±1 point across runs on more than 20% of samples, the rubric is under-specified and needs more concrete anchors.
+
+This tells you whether the current rubric produces reliable scores or just noisy ones that happen to look plausible. Do this before using eval scores as hard gates in production.
+
+---
+
+## 6. Human ground truth calibration
+**File:** `utils/evals.py` — process task, not a code change
+
+The eval is currently "LLM judges LLM" with no external anchor. You cannot know whether the judge is strict-correct (matching human expectations) or strict-wrong (systematically miscalibrated) without human labels.
+
+Recommended process:
+1. Hand-score 30–50 narrations yourself across all levels and topics. Score each on the same QUALITY (1–5) dimension the judge uses.
+2. Compare your scores to judge scores using Pearson correlation or mean absolute error.
+3. **Threshold**: if Pearson r < 0.70, the judge's scores don't correlate reliably with human judgment and the rubric needs rework.
+4. Look specifically at systematic bias: does the judge consistently score 1 point higher than you? Lower? That tells you whether to shift the pass threshold.
+
+This is the only way to know if the eval system is actually measuring what it claims to measure.
+
+---
+
+## 7. Narration-visual match (architectural gap)
+**File:** `utils/evals.py` — `_build_slide_eval_prompt`, `run_slide_evals`
+
+The slide eval receives only narration text — it has no access to the actual slide content (bullets, diagrams, code blocks) that Groot generated. This means the eval cannot catch cases where the narration drifts away from the visual: a narration that accurately explains topic X may still be wrong for this specific slide if the slide shows something different.
+
+The fix requires passing slide content alongside narrations through the eval pipeline:
+- `run_slide_evals(topic, narrations, level, call_llm)` needs a `slide_contents: list` param
+- `_build_slide_eval_prompt` would include each slide's content alongside its narration
+- The judge could then check: "does the narration describe what's on this slide?"
+
+This is a medium-effort change that requires the pipeline to store and forward slide content from Groot all the way through to the eval call. Currently that data is not preserved after `generate_slides()` returns.
+
+Decision needed: is the narration-visual drift a real observed problem, or theoretical? If it's theoretical, defer. If instructors are seeing slides where the audio doesn't match the visuals, prioritise this.
+
+---
+
+## 8. Reverse-engineer openmaic slide generation prompts
+**Goal:** Figure out how openmaic generates the slides and capture all the prompts needed to get them, so that we can directly talk to OpenAI and remove Groot from the loop entirely. This will significantly improve reliability by removing an external undocumented dependency.
+
+---
+
 ## Not Necessary (low/no real-world impact)
 
 - **#1** — Type hint `agents: dict` should be `agents: list` in `groot/client.py`. Cosmetic only, no runtime impact.

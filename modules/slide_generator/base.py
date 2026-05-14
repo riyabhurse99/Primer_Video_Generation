@@ -10,7 +10,7 @@ class BaseSlideGenerator(ABC):
     """
 
     @abstractmethod
-    def generate(self, video_script: VideoScript, output_path: str) -> str:
+    def generate(self, video_script: VideoScript, output_path: str, reserve_corner: bool = False) -> str:
         """
         Takes a VideoScript and generates a PPTX file.
         Returns the path to the generated PPTX file.

@@ -31,6 +31,7 @@ class DirectPipeline:
         temp_dir: str = "./temp",
         output_dir: str = "./output",
         call_llm=None,
+        presenter_overlay: bool = False,
     ):
         self.slide_generator = slide_generator
         self.tts = tts
@@ -39,10 +40,11 @@ class DirectPipeline:
         self.temp_dir = temp_dir
         self.output_dir = output_dir
         self.call_llm = call_llm  # Optional: (prompt: str) -> str. None = evals skipped.
+        self.presenter_overlay = presenter_overlay
 
-    def run(self, topic: str, level: str = None, scribble: bool = False, animation: bool = False, num_scenes: int = 4) -> str:
+    def run(self, topic: str, level: str = None, scribble: bool = False, animation: bool = False, num_scenes: int = 4, lecture_eval: bool = False) -> str:
         """Generates a video for the given topic. Returns the stored video path."""
-        logger.info(f"=== Direct Pipeline START — topic='{topic}' level={level or 'generic'} num_scenes={num_scenes} ===")
+        logger.info(f"=== Direct Pipeline START — topic='{topic}' level={level or 'generic'} num_scenes={num_scenes} lecture_eval={lecture_eval} presenter_overlay={self.presenter_overlay} ===")
         pipeline_start = time.time()
 
         safe_topic = topic.replace(" ", "_").replace("/", "-")[:50]
@@ -50,12 +52,18 @@ class DirectPipeline:
         video_temp_dir = os.path.join(self.temp_dir, f"direct_{safe_topic}_{job_id}")
         os.makedirs(video_temp_dir, exist_ok=True)
 
+        _avatar_path = None
+        if self.presenter_overlay:
+            import pathlib
+            _avatar_path = str(pathlib.Path(__file__).parent.parent / "assets" / "shivank_avatar.png")
+
         try:
             # Step 1: Generate slides and narrations
             images_dir = os.path.join(video_temp_dir, "slides")
             with StepTimer() as slide_timer:
                 images, narrations = self.slide_generator.generate_slides(
                     topic, images_dir, num_scenes=num_scenes, level=level, call_llm=self.call_llm,
+                    reserve_corner=self.presenter_overlay,
                 )
 
             if not images:
@@ -80,6 +88,7 @@ class DirectPipeline:
                 narrations=narrations,
                 level=level,
                 call_llm=self.call_llm,
+                do_lecture_eval=lecture_eval,
             )
 
             # Step 1c: Generate whiteboard sketches (skipped if scribble is off or no LLM)
@@ -149,7 +158,7 @@ class DirectPipeline:
             # Step 3: Assemble video
             final_video_path = os.path.join(video_temp_dir, f"{safe_topic}.mp4")
             with StepTimer() as assembly_timer:
-                self.video_assembler.assemble(paired_images, audio_paths, final_video_path, annotation_mask=annotation_mask)
+                self.video_assembler.assemble(paired_images, audio_paths, final_video_path, annotation_mask=annotation_mask, overlay_image_path=_avatar_path)
 
             # Step 4: Save to output folder
             with StepTimer() as storage_timer:

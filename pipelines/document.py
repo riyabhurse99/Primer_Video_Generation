@@ -14,6 +14,7 @@ from modules.groot.renderer import (
     render_groot_elements_as_png,
     extract_element_boxes,
 )
+from modules.groot.generator import _reserve_avatar_corner
 from modules.tts.base import BaseTTS
 from modules.video_assembler.base import BaseVideoAssembler
 from modules.storage.base import BaseStorage
@@ -123,6 +124,7 @@ class DocumentPipeline:
         call_llm,
         temp_dir: str = "./temp",
         output_dir: str = "./output",
+        presenter_overlay: bool = False,
     ):
         self.tts = tts
         self.video_assembler = video_assembler
@@ -130,6 +132,7 @@ class DocumentPipeline:
         self.call_llm = call_llm
         self.temp_dir = temp_dir
         self.output_dir = output_dir
+        self.presenter_overlay = presenter_overlay
 
     def run(
         self,
@@ -138,6 +141,7 @@ class DocumentPipeline:
         instructions: str,
         scribble: bool = False,
         max_slides: int = None,
+        lecture_eval: bool = False,
     ) -> str:
         """Generate a video from any document content.
 
@@ -160,6 +164,11 @@ class DocumentPipeline:
         safe_topic = topic.replace(" ", "_").replace("/", "-")[:50]
         video_temp_dir = os.path.join(self.temp_dir, f"doc_{safe_topic}")
         os.makedirs(video_temp_dir, exist_ok=True)
+
+        _avatar_path = None
+        if self.presenter_overlay:
+            import pathlib
+            _avatar_path = str(pathlib.Path(__file__).parent.parent / "assets" / "shivank_avatar.png")
 
         # Path where we cache the Claude slide plan — avoids re-calling Claude on retry
         plan_cache_path = os.path.join(video_temp_dir, "slide_plan.json")
@@ -195,12 +204,16 @@ class DocumentPipeline:
                         logger.info(f"  Slide {i+1} already rendered — skipping PNG")
                     else:
                         elements = _slide_to_elements(slide, i)
+                        if self.presenter_overlay:
+                            _reserve_avatar_corner(elements)
                         render_groot_elements_as_png(elements, img_path, slide.get("title", ""))
 
                     # Bounding boxes for pen annotation (regenerate if missing)
                     boxes_path = os.path.splitext(img_path)[0] + ".boxes.json"
                     if not os.path.exists(boxes_path):
                         elements = _slide_to_elements(slide, i)
+                        if self.presenter_overlay:
+                            _reserve_avatar_corner(elements)
                         boxes = extract_element_boxes(elements)
                         if boxes:
                             with open(boxes_path, "w") as bf:
@@ -219,6 +232,17 @@ class DocumentPipeline:
                     narrations.append(slide.get("narration", ""))
 
             logger.info(f"  Slides ready — {len(images)} total ({render_timer.elapsed:.1f}s)")
+
+            # ── Step 1c: Eval + improve narrations before TTS ────────────
+            if narrations:
+                from utils.evals import eval_and_improve
+                narrations, _ = eval_and_improve(
+                    topic=topic,
+                    narrations=narrations,
+                    level=None,
+                    call_llm=self.call_llm,
+                    do_lecture_eval=lecture_eval,
+                )
 
             # ── Step 3: TTS (skips already-generated audio files) ────────
             with StepTimer() as tts_timer:
@@ -258,6 +282,7 @@ class DocumentPipeline:
                 self.video_assembler.assemble(
                     paired_images, audio_paths, final_video_path,
                     annotation_mask=annotation_mask,
+                    overlay_image_path=_avatar_path,
                 )
 
             # ── Step 5: Save ─────────────────────────────────────────────

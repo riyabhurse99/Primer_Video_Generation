@@ -30,7 +30,47 @@ def _write_progress(progress_path: str, step: str, detail: str = ""):
         pass
 
 
-def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num_scenes, result_path, progress_path):
+def _classify_prompt(prompt: str) -> str:
+    """Label a Claude prompt by its purpose for the run log."""
+    p = prompt.strip()
+    if "strict quality evaluator" in p[:300]:
+        return "eval:slide"
+    if p[:80].startswith("You are rewriting a narration"):
+        return "eval:improve"
+    if "whole-lecture level" in p[:400] or "lecture as a whole" in p[:400]:
+        return "eval:lecture"
+    return "content"
+
+
+def _make_logged_call_llm(client, model, max_tokens, run_logger):
+    """Return a call_llm wrapper that logs timing, tokens, and purpose."""
+    def call_llm(prompt):
+        purpose = _classify_prompt(prompt)
+        t0 = time.perf_counter()
+        msg = client.messages.create(
+            model=model, max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        text = "".join(b.text for b in msg.content if hasattr(b, "text"))
+        usage = getattr(msg, "usage", None)
+        # For content/improve calls store more output so narration text is readable in the UI
+        out_limit = 600 if purpose in ("content", "eval:improve") else 200
+        run_logger.log_api_call(
+            api="claude",
+            endpoint="messages.create",
+            input_summary=prompt[:200],
+            output_summary=text[:out_limit],
+            duration_ms=dur_ms,
+            purpose=purpose,
+            tokens_in=getattr(usage, "input_tokens", 0),
+            tokens_out=getattr(usage, "output_tokens", 0),
+        )
+        return text
+    return call_llm
+
+
+def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num_scenes, lecture_eval, presenter_overlay, result_path, progress_path, log_path):
     sys.path.insert(0, PROJECT_ROOT)
     os.chdir(PROJECT_ROOT)
     try:
@@ -41,20 +81,27 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num
         from modules.storage.local import LocalStorage
         from config.settings import CLAUDE_MODEL, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES
         import anthropic
+        import utils.run_logger as run_logger
 
+        run_logger.initialize(log_path)
         _write_progress(progress_path, "Starting", f"Setting up pipeline for \"{topic}\"")
+        run_logger.log_step("Starting", f'Setting up pipeline for "{topic}" · level={level or "generic"}')
 
         client = anthropic.Anthropic(api_key=llm_key)
-        def call_llm(prompt):
-            msg = client.messages.create(model=CLAUDE_MODEL, max_tokens=2048,
-                                         messages=[{"role": "user", "content": prompt}])
-            return "".join(b.text for b in msg.content if hasattr(b, "text"))
+        call_llm = _make_logged_call_llm(client, CLAUDE_MODEL, 2048, run_logger)
 
         os.makedirs(TEMP_DIR, exist_ok=True)
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         session_dir = _make_session_dir(OUTPUT_DIR, "single")
 
+        if presenter_overlay:
+            avatar_file = os.path.join(PROJECT_ROOT, "assets", "shivank_avatar.png")
+            if not os.path.exists(avatar_file):
+                presenter_overlay = False
+                run_logger.log_step("Warning", "Avatar file not found — presenter overlay disabled")
+
         _write_progress(progress_path, "Generating slides", "Groot is building slide content...")
+        run_logger.log_step("Generating slides", "Groot is building slide content...")
         pipeline = DirectPipeline(
             slide_generator=GrootSlideGenerator(cookies=GROOT_COOKIES),
             tts=ElevenLabsTTS(api_key=el_k, voice_id=el_v),
@@ -62,26 +109,33 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num
             storage=LocalStorage(base_path=session_dir),
             temp_dir=TEMP_DIR, output_dir=OUTPUT_DIR,
             call_llm=call_llm,
+            presenter_overlay=presenter_overlay,
         )
 
         # Patch pipeline to emit progress
         original_run = pipeline.run
-        def patched_run(topic, level=None, scribble=False, animation=False, num_scenes=4):
-            _write_progress(progress_path, "Generating slides", "AI is building your slides...")
-            return original_run(topic, level=level, scribble=scribble, animation=animation, num_scenes=num_scenes)
+        def patched_run(topic, level=None, scribble=False, animation=False, num_scenes=4, lecture_eval=False):
+            _write_progress(progress_path, "Generating slides", "Groot is building slide content...")
+            return original_run(topic, level=level, scribble=scribble, animation=animation, num_scenes=num_scenes, lecture_eval=lecture_eval)
         pipeline.run = patched_run
 
-        video_path = pipeline.run(topic, level=level, scribble=scribble, animation=animation, num_scenes=num_scenes)
+        video_path = pipeline.run(topic, level=level, scribble=scribble, animation=animation, num_scenes=num_scenes, lecture_eval=lecture_eval)
         _write_progress(progress_path, "Done", "Video ready!")
+        run_logger.log_step("Done", "Video ready!")
         with open(result_path, "w") as f:
             json.dump({"status": "ok", "path": video_path}, f)
     except Exception as e:
         _write_progress(progress_path, "Error", str(e))
+        try:
+            import utils.run_logger as run_logger
+            run_logger.log_error(str(e), context="run_single_topic")
+        except Exception:
+            pass
         with open(result_path, "w") as f:
             json.dump({"status": "error", "error": str(e)}, f)
 
 
-def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scribble, max_slides, result_path, progress_path):
+def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scribble, max_slides, lecture_eval, presenter_overlay, result_path, progress_path, log_path):
     sys.path.insert(0, PROJECT_ROOT)
     os.chdir(PROJECT_ROOT)
     try:
@@ -91,8 +145,11 @@ def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scr
         from modules.storage.local import LocalStorage
         from config.settings import CLAUDE_MODEL, TEMP_DIR, OUTPUT_DIR
         import anthropic
+        import utils.run_logger as run_logger
 
+        run_logger.initialize(log_path)
         _write_progress(progress_path, "Planning slides", "Claude is reading your document...")
+        run_logger.log_step("Planning slides", "Claude is reading your document...")
 
         client = anthropic.Anthropic(api_key=llm_key)
         call_count = [0]
@@ -105,19 +162,44 @@ def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scr
                 _write_progress(progress_path, "Generating audio scripts", f"Writing narration ({call_count[0]} of ~45 calls)...")
             else:
                 _write_progress(progress_path, "Generating audio scripts", f"Writing narration for slides ({call_count[0]} calls done)...")
-            msg = client.messages.create(model=CLAUDE_MODEL, max_tokens=16000,
-                                         messages=[{"role": "user", "content": prompt}])
-            return "".join(b.text for b in msg.content if hasattr(b, "text"))
+            purpose = _classify_prompt(prompt)
+            t0 = time.perf_counter()
+            msg = client.messages.create(
+                model=CLAUDE_MODEL, max_tokens=16000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            dur_ms = int((time.perf_counter() - t0) * 1000)
+            text = "".join(b.text for b in msg.content if hasattr(b, "text"))
+            usage = getattr(msg, "usage", None)
+            run_logger.log_api_call(
+                api="claude",
+                endpoint="messages.create",
+                input_summary=prompt[:200],
+                output_summary=text[:200],
+                duration_ms=dur_ms,
+                purpose=purpose,
+                call_n=call_count[0],
+                tokens_in=getattr(usage, "input_tokens", 0),
+                tokens_out=getattr(usage, "output_tokens", 0),
+            )
+            return text
 
         os.makedirs(TEMP_DIR, exist_ok=True)
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         session_dir = _make_session_dir(OUTPUT_DIR, "document")
+
+        if presenter_overlay:
+            avatar_file = os.path.join(PROJECT_ROOT, "assets", "shivank_avatar.png")
+            if not os.path.exists(avatar_file):
+                presenter_overlay = False
+                run_logger.log_step("Warning", "Avatar file not found — presenter overlay disabled")
 
         pipeline = DocumentPipeline(
             tts=ElevenLabsTTS(api_key=el_k, voice_id=el_v),
             video_assembler=FFmpegVideoAssembler(temp_dir=TEMP_DIR),
             storage=LocalStorage(base_path=session_dir),
             call_llm=call_llm, temp_dir=TEMP_DIR, output_dir=OUTPUT_DIR,
+            presenter_overlay=presenter_overlay,
         )
         video_path = pipeline.run(
             topic=topic,
@@ -125,17 +207,24 @@ def run_document(topic, document_content, instructions, el_k, el_v, llm_key, scr
             instructions=instructions,
             scribble=scribble,
             max_slides=max_slides,
+            lecture_eval=lecture_eval,
         )
         _write_progress(progress_path, "Done", "Video ready!")
+        run_logger.log_step("Done", "Video ready!")
         with open(result_path, "w") as f:
             json.dump({"status": "ok", "path": video_path}, f)
     except Exception as e:
         _write_progress(progress_path, "Error", str(e))
+        try:
+            import utils.run_logger as run_logger
+            run_logger.log_error(str(e), context="run_document")
+        except Exception:
+            pass
         with open(result_path, "w") as f:
             json.dump({"status": "error", "error": str(e)}, f)
 
 
-def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key, scribble, animation, max_videos, result_path, progress_path):
+def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key, scribble, animation, max_videos, lecture_eval, presenter_overlay, result_path, progress_path, log_path):
     sys.path.insert(0, PROJECT_ROOT)
     os.chdir(PROJECT_ROOT)
     try:
@@ -148,19 +237,25 @@ def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key
         from modules.personalization.claude import ClaudePersonalization
         from config.settings import CLAUDE_MODEL, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES
         import anthropic
+        import utils.run_logger as run_logger
 
+        run_logger.initialize(log_path)
         _write_progress(progress_path, "Analyzing profile", "Claude is building your personalized curriculum...")
+        run_logger.log_step("Analyzing profile", "Claude is building your personalized curriculum...")
 
         client = anthropic.Anthropic(api_key=llm_key)
-        def call_llm(prompt):
-            msg = client.messages.create(model=CLAUDE_MODEL, max_tokens=2048,
-                                         messages=[{"role": "user", "content": prompt}])
-            return "".join(b.text for b in msg.content if hasattr(b, "text"))
+        call_llm = _make_logged_call_llm(client, CLAUDE_MODEL, 2048, run_logger)
 
         os.makedirs(TEMP_DIR, exist_ok=True)
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         safe_course = course.replace(" ", "_").replace("/", "-")[:20]
         session_dir = _make_session_dir(OUTPUT_DIR, f"primer_{safe_course}")
+
+        if presenter_overlay:
+            avatar_file = os.path.join(PROJECT_ROOT, "assets", "shivank_avatar.png")
+            if not os.path.exists(avatar_file):
+                presenter_overlay = False
+                run_logger.log_step("Warning", "Avatar file not found — presenter overlay disabled")
 
         curriculum = {"course": course, "topics": topics}
         qna_list = [QnA(question=q, answer=a) for q, a in qa_pairs]
@@ -176,18 +271,28 @@ def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key
             video_assembler=FFmpegVideoAssembler(temp_dir=TEMP_DIR),
             storage=LocalStorage(base_path=session_dir),
             temp_dir=TEMP_DIR, output_dir=OUTPUT_DIR,
+            call_llm=call_llm,
+            presenter_overlay=presenter_overlay,
         )
 
         _write_progress(progress_path, "Generating videos", "Building personalized primer videos...")
+        run_logger.log_step("Generating videos", "Building personalized primer videos...")
         result = pipeline.run(questionnaire, student_id="student_demo_001",
-                              scribble=scribble, animation=animation, max_videos=max_videos)
+                              scribble=scribble, animation=animation, max_videos=max_videos,
+                              lecture_eval=lecture_eval)
 
         videos = [{"path": v.video_path, "topic": v.topic, "section": v.section}
                   for v in result.videos]
         _write_progress(progress_path, "Done", f"{len(videos)} videos ready!")
+        run_logger.log_step("Done", f"{len(videos)} videos ready!")
         with open(result_path, "w") as f:
             json.dump({"status": "ok", "videos": videos}, f)
     except Exception as e:
         _write_progress(progress_path, "Error", str(e))
+        try:
+            import utils.run_logger as run_logger
+            run_logger.log_error(str(e), context="run_personalized_primer")
+        except Exception:
+            pass
         with open(result_path, "w") as f:
             json.dump({"status": "error", "error": str(e)}, f)

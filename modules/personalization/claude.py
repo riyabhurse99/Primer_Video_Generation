@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import anthropic
 from models.schemas import (
     CurriculumInput, QuestionnaireInput,
@@ -8,6 +9,7 @@ from models.schemas import (
 from modules.personalization.base import BasePersonalization
 from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
 from utils.logger import get_logger
+import utils.run_logger as run_logger
 
 logger = get_logger(__name__)
 
@@ -155,15 +157,27 @@ Group Level: {input.group_level}
 Curriculum:
 {json.dumps(input.curriculum, indent=2)}
 """
+        t0 = time.perf_counter()
         response = self.client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=16000,
             system=GENERIC_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}]
         )
+        dur_ms = int((time.perf_counter() - t0) * 1000)
         if response.stop_reason == "max_tokens":
             logger.warning("Generic plan response was truncated (max_tokens hit) — JSON may be incomplete")
         raw = "".join(b.text for b in response.content if hasattr(b, "text"))
+        usage = getattr(response, "usage", None)
+        run_logger.log_api_call(
+            api="claude", endpoint="messages.create",
+            input_summary=f"[personalization:generic] course={input.course} level={input.group_level}",
+            output_summary=raw[:200],
+            duration_ms=dur_ms,
+            purpose="personalization:generic",
+            tokens_in=getattr(usage, "input_tokens", 0),
+            tokens_out=getattr(usage, "output_tokens", 0),
+        )
         return self._parse_response(raw, input.course, input.group_level)
 
     def generate_dynamic_plan(self, input: QuestionnaireInput) -> PrimerPlan:
@@ -178,13 +192,25 @@ Course Curriculum:
 Student Questionnaire Answers:
 {qna_text}
 """
+        t0 = time.perf_counter()
         response = self.client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=16000,
             system=DYNAMIC_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}]
         )
+        dur_ms = int((time.perf_counter() - t0) * 1000)
         if response.stop_reason == "max_tokens":
             logger.warning("Dynamic plan response was truncated (max_tokens hit) — JSON may be incomplete")
         raw = "".join(b.text for b in response.content if hasattr(b, "text"))
+        usage = getattr(response, "usage", None)
+        run_logger.log_api_call(
+            api="claude", endpoint="messages.create",
+            input_summary=f"[personalization:dynamic] course={input.course} level={input.group_level} · {len(input.questions_and_answers)} Q&A",
+            output_summary=raw[:200],
+            duration_ms=dur_ms,
+            purpose="personalization:dynamic",
+            tokens_in=getattr(usage, "input_tokens", 0),
+            tokens_out=getattr(usage, "output_tokens", 0),
+        )
         return self._parse_response(raw, input.course, input.group_level)

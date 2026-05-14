@@ -7,8 +7,11 @@ from modules.video_assembler.base import BaseVideoAssembler
 from modules.storage.base import BaseStorage
 from utils.pptx_to_images import pptx_to_images
 from utils.logger import get_logger
+from utils.evals import eval_and_improve
 
 logger = get_logger(__name__)
+
+_DEPTH_TO_LEVEL = {"beginner": "basic", "intermediate": "intermediate", "advanced": "advanced"}
 
 
 class DynamicPrimerPipeline:
@@ -26,7 +29,9 @@ class DynamicPrimerPipeline:
         video_assembler: BaseVideoAssembler,
         storage: BaseStorage,
         temp_dir: str = "./temp",
-        output_dir: str = "./output"
+        output_dir: str = "./output",
+        call_llm=None,
+        presenter_overlay: bool = False,
     ):
         self.personalization = personalization
         self.slide_generator = slide_generator
@@ -35,8 +40,10 @@ class DynamicPrimerPipeline:
         self.storage = storage
         self.temp_dir = temp_dir
         self.output_dir = output_dir
+        self.call_llm = call_llm
+        self.presenter_overlay = presenter_overlay
 
-    def _generate_single_video(self, video_script: VideoScript, context: str, scribble: bool = False) -> str:
+    def _generate_single_video(self, video_script: VideoScript, context: str, scribble: bool = False, lecture_eval: bool = False) -> str:
         """Runs the full pipeline for one video. Returns final video path."""
         safe_topic = video_script.topic.replace(" ", "_").replace("/", "-")[:50]
         video_temp_dir = os.path.join(self.temp_dir, safe_topic)
@@ -44,7 +51,12 @@ class DynamicPrimerPipeline:
 
         # Step 1: Generate PPTX
         pptx_path = os.path.join(video_temp_dir, f"{safe_topic}.pptx")
-        self.slide_generator.generate(video_script, pptx_path)
+        self.slide_generator.generate(video_script, pptx_path, reserve_corner=self.presenter_overlay)
+
+        _avatar_path = None
+        if self.presenter_overlay:
+            import pathlib
+            _avatar_path = str(pathlib.Path(__file__).parent.parent / "assets" / "shivank_avatar.png")
 
         # Step 2: PPTX → PNG images
         images_dir = os.path.join(video_temp_dir, "images")
@@ -78,6 +90,19 @@ class DynamicPrimerPipeline:
             logger.warning("No image/narration pairs — skipping video assembly")
             return None
 
+        # Eval + improve narrations before TTS (skipped when no LLM configured)
+        if self.call_llm and pair_count > 0:
+            eval_level = _DEPTH_TO_LEVEL.get(video_script.depth, "intermediate")
+            script_narrations = list(script_narrations[:pair_count])
+            script_narrations, _ = eval_and_improve(
+                topic=video_script.topic,
+                narrations=script_narrations,
+                level=eval_level,
+                call_llm=self.call_llm,
+                do_lecture_eval=lecture_eval,
+            )
+            pair_count = len(script_narrations)
+
         if len(content_images) != len(script_narrations):
             logger.warning(
                 f"Count mismatch: {len(content_images)} images vs "
@@ -99,13 +124,14 @@ class DynamicPrimerPipeline:
         final_video_path = os.path.join(video_temp_dir, f"{safe_topic}.mp4")
         annotation_mask = [scribble] * len(paired_images)
         self.video_assembler.assemble(paired_images, audio_paths, final_video_path,
-                                      annotation_mask=annotation_mask)
+                                      annotation_mask=annotation_mask,
+                                      overlay_image_path=_avatar_path)
 
         # Step 5: Save to storage
         stored_path = self.storage.save(final_video_path, f"{context}/{safe_topic}.mp4")
         return stored_path
 
-    def run(self, input: QuestionnaireInput, student_id: str, scribble: bool = False, animation: bool = False, max_videos: int = None) -> PrimerOutput:
+    def run(self, input: QuestionnaireInput, student_id: str, scribble: bool = False, animation: bool = False, max_videos: int = None, lecture_eval: bool = False) -> PrimerOutput:
         logger.info(f"=== Dynamic Primer Pipeline START — student={student_id}, course={input.course} max_videos={max_videos} ===")
 
         # Step 1: Generate personalized plan from questionnaire answers
@@ -124,7 +150,7 @@ class DynamicPrimerPipeline:
                 logger.info(f"  Generating video: {video_script.topic}")
                 try:
                     context = section.name
-                    video_path = self._generate_single_video(video_script, context, scribble=scribble)
+                    video_path = self._generate_single_video(video_script, context, scribble=scribble, lecture_eval=lecture_eval)
                     if video_path is None:
                         logger.warning(f"  Skipping {video_script.topic} — no video produced")
                         continue

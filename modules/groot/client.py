@@ -26,10 +26,12 @@ import json
 import random
 import re
 import string
+import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from utils.logger import get_logger
+import utils.run_logger as run_logger
 
 logger = get_logger(__name__)
 
@@ -410,7 +412,7 @@ class GrootAPIClient:
     ) -> dict:
         """
         Generates slide canvas elements for one scene.
-        Returns: {content: {canvas: {elements: [...]}}, effectiveOutline: {...}}
+        Returns: {content: {elements: [...]}, effectiveOutline: {...}}
 
         Payload matches the v8() call in groot's JS source:
         {outline, allOutlines, stageId, pdfImages, imageMapping, stageInfo, agents}
@@ -427,14 +429,24 @@ class GrootAPIClient:
         title = outline.get("title", "unknown")
         logger.info(f"  groot scene-content: {title}")
         headers = {"Referer": f"{self.base_url}/classroom/{stage_id}"}
+        t0 = time.perf_counter()
         resp = self.session.post(
             f"{self.base_url}/api/generate/scene-content",
             json=payload,
             headers=headers,
             timeout=90,
         )
+        dur_ms = int((time.perf_counter() - t0) * 1000)
         resp.raise_for_status()
-        return resp.json()
+        result = resp.json()
+        elements = len((result.get("content", {}) or {}).get("elements", []))
+        run_logger.log_api_call(
+            api="groot", endpoint="scene-content",
+            input_summary=title,
+            output_summary=f"{elements} canvas elements",
+            duration_ms=dur_ms,
+        )
+        return result
 
     # ──────────────────────────────────────────────────────────────────────────
     # Scene Actions (Narrations)
@@ -473,14 +485,25 @@ class GrootAPIClient:
         title = outline.get("title", "unknown")
         logger.info(f"  groot scene-actions: {title}")
         headers = {"Referer": f"{self.base_url}/classroom/{stage_id}"}
+        t0 = time.perf_counter()
         resp = self.session.post(
             f"{self.base_url}/api/generate/scene-actions",
             json=payload,
             headers=headers,
             timeout=90,
         )
+        dur_ms = int((time.perf_counter() - t0) * 1000)
         resp.raise_for_status()
-        return resp.json()
+        result = resp.json()
+        speeches = self.extract_speeches(result.get("scene", {}).get("actions", []))
+        narration_preview = speeches[0][:80] if speeches else ""
+        run_logger.log_api_call(
+            api="groot", endpoint="scene-actions",
+            input_summary=title,
+            output_summary=f"{len(speeches)} speech(es) · \"{narration_preview}\"",
+            duration_ms=dur_ms,
+        )
+        return result
 
     # ──────────────────────────────────────────────────────────────────────────
     # TTS
@@ -512,14 +535,23 @@ class GrootAPIClient:
             "ttsBaseUrl": tts_base_url,
         }
         headers = {"Referer": f"{self.base_url}/classroom/{stage_id}"}
+        t0 = time.perf_counter()
         resp = self.session.post(
             f"{self.base_url}/api/generate/tts",
             json=payload,
             headers=headers,
             timeout=60,
         )
+        dur_ms = int((time.perf_counter() - t0) * 1000)
         resp.raise_for_status()
-        return resp.content
+        audio = resp.content
+        run_logger.log_api_call(
+            api="groot", endpoint="tts",
+            input_summary=f"{len(text)} chars · voice={tts_voice}",
+            output_summary=f"{len(audio) // 1024} KB audio",
+            duration_ms=dur_ms,
+        )
+        return audio
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helper

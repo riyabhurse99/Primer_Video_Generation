@@ -28,6 +28,9 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 # ─── TTS ───────────────────────────────────────────
 ELEVENLABS_API_KEY = _get("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = _get("ELEVENLABS_VOICE_ID")
+# Shivank's ElevenLabs voice ID — avatar overlay activates when this voice is selected.
+# Override via SHIVANK_VOICE_ID in .env if the voice ID ever changes.
+SHIVANK_VOICE_ID = _get("SHIVANK_VOICE_ID") or "7M69Y78mYqPLZS5ZZSTT"
 
 # ─── OPENMAIC ──────────────────────────────────────
 OPENMAIC_BASE_URL = _get("OPENMAIC_BASE_URL") or "http://localhost:3000"

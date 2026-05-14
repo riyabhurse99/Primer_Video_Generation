@@ -1,6 +1,5 @@
 # Environment — contains API keys, never commit
 .env
-.env.example
 
 # Generated output — large files, no need in repo
 output/

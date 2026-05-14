@@ -58,6 +58,31 @@ Rules:
 - 80-130 words"""
 
 
+# Reserved region for presenter avatar overlay (canvas units, 1000×562.5 space).
+# Avatar: 366×240px at pixel (1538, 16). Canvas scale=1.92, header offset=60px.
+# x threshold: (1920 - 366 - 16) / 1.92 = 800.6 → 800 canvas units
+# y threshold: (16 + 240 - 60) / 1.92 = 102.1 → clip if top < 103
+#   (60px header is added to every element's top by the renderer, so the
+#    element-canvas y-axis starts at pixel 60, not 0)
+_AVATAR_CANVAS_LEFT = 795
+_AVATAR_CANVAS_TOP  = 103
+
+
+def _reserve_avatar_corner(elements: list) -> list:
+    """
+    Clip element widths so nothing extends into the top-right corner reserved for
+    the presenter avatar. Elements entirely inside the reserved zone get width=0
+    (invisible). Elements that partially overlap get their right edge clipped to
+    canvas unit 929. Modifies the list in-place and returns it.
+    """
+    for elem in elements:
+        if elem.get("top", 0) < _AVATAR_CANVAS_TOP:
+            right_edge = elem.get("left", 0) + elem.get("width", 0)
+            if right_edge > _AVATAR_CANVAS_LEFT:
+                elem["width"] = max(0, _AVATAR_CANVAS_LEFT - elem.get("left", 0))
+    return elements
+
+
 def _claude_fallback_elements(topic: str, scene_title: str, call_llm) -> list:
     """
     Use Claude to generate slide elements when Groot fails.
@@ -150,7 +175,7 @@ class GrootSlideGenerator(BaseSlideGenerator):
 
     def generate_slides(
         self, topic: str, images_dir: str, num_scenes: int = 4,
-        level: str = None, call_llm=None,
+        level: str = None, call_llm=None, reserve_corner: bool = False,
     ) -> tuple[list[str], list[str]]:
         """
         Takes a topic string, generates slide PNGs and narrations.
@@ -158,22 +183,24 @@ class GrootSlideGenerator(BaseSlideGenerator):
 
         If call_llm is provided, uses the LLM to generate topic+level-aware
         scene titles instead of the hardcoded defaults.
+        If reserve_corner is True, clips any element that extends into the
+        top-right corner (reserved for the presenter avatar overlay).
         """
         scene_titles = generate_scene_titles(topic, num_scenes, level, call_llm)
-        return self._run(topic, images_dir, num_scenes, scene_titles=scene_titles, call_llm=call_llm)
+        return self._run(topic, images_dir, num_scenes, scene_titles=scene_titles, call_llm=call_llm, reserve_corner=reserve_corner)
 
     # ──────────────────────────────────────────────────────────────────────────
     # BaseSlideGenerator interface — used by generic/dynamic pipelines
     # ──────────────────────────────────────────────────────────────────────────
 
-    def generate(self, video_script: VideoScript, output_path: str) -> str:
+    def generate(self, video_script: VideoScript, output_path: str, reserve_corner: bool = False) -> str:
         """
         Generates slides from a VideoScript and writes proxy files
         (.png_list, .narrations, stub .pptx) for the generic/dynamic pipelines.
         """
         images_dir = output_path.replace(".pptx", "_groot_images")
         num_scenes = max(len(video_script.slides), 4)
-        images, narrations = self._run(video_script.topic, images_dir, num_scenes)
+        images, narrations = self._run(video_script.topic, images_dir, num_scenes, reserve_corner=reserve_corner)
 
         png_list_path = output_path.replace(".pptx", ".png_list")
         with open(png_list_path, "w") as f:
@@ -194,7 +221,7 @@ class GrootSlideGenerator(BaseSlideGenerator):
 
     def _run(
         self, topic: str, images_dir: str, num_scenes: int,
-        scene_titles: list = None, call_llm=None,
+        scene_titles: list = None, call_llm=None, reserve_corner: bool = False,
     ) -> tuple[list[str], list[str]]:
         """Generates slides and narrations for a topic. Returns (image_paths, narrations)."""
         os.makedirs(images_dir, exist_ok=True)
@@ -237,6 +264,8 @@ class GrootSlideGenerator(BaseSlideGenerator):
                 content_obj = content_resp.get("content", {})
                 effective_outline = content_resp.get("effectiveOutline", outline)
                 elements = content_obj.get("elements", [])
+                if reserve_corner and elements:
+                    _reserve_avatar_corner(elements)
 
                 groot_narration_ok = False
                 for attempt in range(3):

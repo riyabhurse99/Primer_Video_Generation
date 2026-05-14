@@ -1,11 +1,13 @@
 import os
 import json
 import base64
+import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from modules.tts.base import BaseTTS
 from utils.logger import get_logger
+import utils.run_logger as run_logger
 
 logger = get_logger(__name__)
 
@@ -73,18 +75,29 @@ class ElevenLabsTTS(BaseTTS):
 
         # Try with-timestamps endpoint first; fall back to basic if not available
         url = ELEVENLABS_TTS_URL.format(voice_id=self.voice_id)
+        t0 = time.perf_counter()
         response = self._session.post(url, headers=self.headers, json=payload, timeout=60)
 
         if response.status_code == 401:
             logger.warning("with-timestamps endpoint returned 401 — falling back to basic TTS endpoint")
             url = ELEVENLABS_TTS_URL_BASIC.format(voice_id=self.voice_id)
             response = self._session.post(url, headers=self.headers, json=payload, timeout=60)
+            dur_ms = int((time.perf_counter() - t0) * 1000)
             response.raise_for_status()
             with open(output_path, "wb") as f:
                 f.write(response.content)
+            audio_kb = len(response.content) // 1024
+            run_logger.log_api_call(
+                api="elevenlabs", endpoint="text-to-speech",
+                input_summary=text[:100],
+                output_summary=f"{audio_kb} KB audio (no timestamps)",
+                duration_ms=dur_ms,
+                chars=len(text), audio_kb=audio_kb,
+            )
             logger.info(f"Audio saved (no timestamps): {output_path}")
             return output_path
 
+        dur_ms = int((time.perf_counter() - t0) * 1000)
         response.raise_for_status()
         data = response.json()
 
@@ -102,6 +115,14 @@ class ElevenLabsTTS(BaseTTS):
                 json.dump(words, f)
             logger.info(f"Timestamps saved: {ts_path} ({len(words)} words)")
 
+        audio_kb = len(audio_bytes) // 1024
+        run_logger.log_api_call(
+            api="elevenlabs", endpoint="text-to-speech",
+            input_summary=text[:100],
+            output_summary=f"{audio_kb} KB audio",
+            duration_ms=dur_ms,
+            chars=len(text), audio_kb=audio_kb,
+        )
         logger.info(f"Audio saved: {output_path}")
         return output_path
 
