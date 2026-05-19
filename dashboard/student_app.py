@@ -1259,19 +1259,19 @@ with _nc_logo:
         unsafe_allow_html=True,
     )
 with _nc1:
-    if st.button("Dashboard", key="_nav1", use_container_width=True):
+    if st.button("Dashboard", key="_nav1", width='stretch'):
         st.session_state.page = "dashboard"
         st.rerun()
 with _nc2:
-    if st.button("Generate", key="_nav2", use_container_width=True):
+    if st.button("Generate", key="_nav2", width='stretch'):
         st.session_state.page = "generate"
         st.rerun()
 with _nc3:
-    if st.button("Library", key="_nav3", use_container_width=True):
+    if st.button("Library", key="_nav3", width='stretch'):
         st.session_state.page = "library"
         st.rerun()
 with _nc4:
-    if st.button("Metrics", key="_nav4", use_container_width=True):
+    if st.button("Metrics", key="_nav4", width='stretch'):
         st.session_state.page = "metrics"
         st.rerun()
 
@@ -1369,19 +1369,19 @@ elif page == "generate":
 
     mc1, mc2, mc3, mc4 = st.columns(4)
     with mc1:
-        if st.button("Single Topic", use_container_width=True, key="mode_single"):
+        if st.button("Single Topic", width='stretch', key="mode_single"):
             st.session_state.gen_mode = "Single Topic"
             st.rerun()
     with mc2:
-        if st.button("Personalized Primer", use_container_width=True, key="mode_primer"):
+        if st.button("Personalized Primer", width='stretch', key="mode_primer"):
             st.session_state.gen_mode = "Personalized Primer"
             st.rerun()
     with mc3:
-        if st.button("Case Study Document", use_container_width=True, key="mode_doc"):
+        if st.button("Case Study Document", width='stretch', key="mode_doc"):
             st.session_state.gen_mode = "Case Study Document"
             st.rerun()
     with mc4:
-        if st.button("Slide by Slide", use_container_width=True, key="mode_sbs"):
+        if st.button("Slide by Slide", width='stretch', key="mode_sbs"):
             st.session_state.gen_mode = "Slide by Slide"
             st.rerun()
 
@@ -2256,7 +2256,7 @@ elif page == "library":
                             """, unsafe_allow_html=True)
 
                             btn_label = "▶ Now Playing" if is_active else "▶ Play"
-                            if st.button(btn_label, key=f"lib_{top}_{i}", use_container_width=True):
+                            if st.button(btn_label, key=f"lib_{top}_{i}", width='stretch'):
                                 st.session_state.play_video = vid
                                 st.rerun()
 
@@ -2287,7 +2287,7 @@ elif page == "library":
                             file_name=os.path.basename(vid["path"]),
                             mime="video/mp4",
                             key="lib_dl",
-                            use_container_width=True,
+                            width='stretch',
                         )
             else:
                 st.markdown("""
@@ -2356,7 +2356,7 @@ elif page == "metrics":
                 "Error": r.get("error", "")[:80] if status == "failed" else "",
             })
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         # ── Step breakdown ─────────────────────────────────────────────────────
         if ok_runs:
