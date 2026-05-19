@@ -40,8 +40,9 @@ class ElevenLabsTTS(BaseTTS):
         }
 
         _retry = Retry(
-            total=3,
-            backoff_factor=1,          # waits: 0s, 1s, 2s
+            total=5,
+            connect=3,                 # retry on DNS / connection failures
+            backoff_factor=2,          # waits: 0s, 2s, 4s, 8s ...
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["POST"],
             raise_on_status=False,

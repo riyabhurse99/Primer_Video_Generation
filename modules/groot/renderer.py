@@ -314,11 +314,16 @@ def _render_header(img, draw):
 # ── Main renderer ──────────────────────────────────────────────────────────────
 
 def render_groot_elements_as_png(
-    elements: list, output_path: str, scene_title: str = ""
+    elements: list, output_path: str, scene_title: str = "",
+    napkin_img_path: str = None, reflow: bool = False,
 ) -> str:
     """
-    Renders a list of groot slide elements onto a 1920x1080 PNG
-    using the Scaler 3.0 design system.
+    Renders a list of groot slide elements onto a 1920x1080 PNG.
+
+    napkin_img_path → two-column layout: text re-flowed left, diagram right.
+    reflow=True     → single-column re-flow: stacks elements top-to-bottom,
+                      measures actual text height so nothing overlaps.
+    default         → trust original element coordinates (Groot-native layout).
     """
     from PIL import Image, ImageDraw
 
@@ -327,7 +332,11 @@ def render_groot_elements_as_png(
 
     _render_header(img, draw)
 
-    if not elements:
+    if napkin_img_path and os.path.exists(napkin_img_path):
+        _render_two_column(img, draw, elements, napkin_img_path, scene_title)
+    elif reflow:
+        _render_single_column_reflow(draw, elements, scene_title)
+    elif not elements:
         _render_no_content(draw, scene_title)
     else:
         for elem in sorted(elements, key=lambda e: e.get("top", 0)):
@@ -336,6 +345,162 @@ def render_groot_elements_as_png(
     img.save(output_path, "PNG")
     logger.debug(f"Rendered → {output_path}")
     return output_path
+
+
+# ── Two-column layout (text left, Napkin visual right) ────────────────────────
+
+# The slide is split at canvas x=490 (pixel ~941).
+# Left column: canvas 0–490, text + bullets live here.
+# Right column: pixel 965–1900, Napkin visual centered in this area.
+_TEXT_COL_MAX_CANVAS = 490   # canvas units (out of 1000)
+_DIVIDER_X_PX        = 955   # pixel x of the subtle vertical divider
+_RIGHT_COL_START_PX  = 975   # pixel x where the Napkin image area begins
+_RIGHT_COL_END_PX    = 1900  # pixel x where it ends (20px right margin)
+
+
+_LEFT_CANVAS_MARGIN  = 60        # canvas units — left margin inside the text column
+_LEFT_COL_W_CANVAS   = _TEXT_COL_MAX_CANVAS - _LEFT_CANVAS_MARGIN  # ~430 canvas units wide
+_FULL_COL_LEFT_CANVAS = 60       # canvas units — left margin for full-width slides
+_FULL_COL_W_CANVAS    = 880      # canvas units — width for full-width slides
+
+
+def _render_single_column_reflow(draw, elements: list, scene_title: str):
+    """
+    Re-flow all text elements top-to-bottom across the full slide width.
+    Measures actual rendered height of each element before positioning the next,
+    so no element ever overlaps another regardless of how many lines the text wraps to.
+    Used for Claude-generated slides without a Napkin diagram.
+    """
+    if not elements:
+        _render_no_content(draw, scene_title)
+        return
+
+    current_y_px = HEADER_TOTAL_H + 70  # start just below the header
+
+    for elem in sorted(elements, key=lambda e: e.get("top", 0)):
+        if current_y_px > OUT_H - 80:
+            break  # no room left on the slide
+
+        if elem.get("type", "text") != "text":
+            # Shapes: render at original position (they don't affect text flow)
+            _render_element(draw, elem)
+            continue
+
+        remaining_px = max(40, (OUT_H - 60) - current_y_px)
+        reflowed = dict(elem)
+        reflowed["left"]   = _FULL_COL_LEFT_CANVAS
+        reflowed["top"]    = (current_y_px - HEADER_TOTAL_H) / SCALE
+        reflowed["width"]  = _FULL_COL_W_CANVAS
+        reflowed["height"] = remaining_px / SCALE   # never render past bottom margin
+
+        _render_element(draw, reflowed)
+
+        # Measure where text actually ended (not where the container ends)
+        bounds = _measure_text_bounds(reflowed)
+        actual_bottom = bounds[3]
+        if actual_bottom <= current_y_px:
+            actual_bottom = current_y_px + int(18 * SCALE)  # minimum advancement
+
+        segs = _parse_html_to_segments(elem.get("content", ""), default_font_size=18.0)
+        max_fs = max((s.font_size for s in segs if s.text.strip()), default=18.0)
+        gap_px = int(max_fs * SCALE * 0.55) if max_fs >= 28 else int(max_fs * SCALE * 0.35)
+        current_y_px = actual_bottom + gap_px
+
+
+def _render_two_column(img, draw, elements: list, napkin_img_path: str, scene_title: str):
+    """Render text elements in the left half (re-flowed), Napkin visual in the right half."""
+    from PIL import Image as _PIL
+
+    # Subtle vertical separator
+    sep_top = HEADER_TOTAL_H + 50
+    sep_bot = OUT_H - 50
+    draw.line([(_DIVIDER_X_PX, sep_top), (_DIVIDER_X_PX, sep_bot)], fill=(210, 213, 224), width=2)
+
+    # Left column — re-flow elements top-to-bottom so wrapping never causes overlaps.
+    # Original `top` values were designed for full-width; in two-column mode the narrower
+    # column causes more line wraps, pushing actual text lower than the next element's top.
+    if not elements:
+        _render_no_content(draw, scene_title)
+    else:
+        current_y_px = HEADER_TOTAL_H + 70   # start below header
+
+        for elem in sorted(elements, key=lambda e: e.get("top", 0)):
+            if elem.get("left", 0) >= _TEXT_COL_MAX_CANVAS:
+                continue
+            if current_y_px > OUT_H - 80:
+                break
+
+            if elem.get("type", "text") != "text":
+                # Shapes: render at original position clipped to left column, don't re-flow
+                clipped = dict(elem)
+                clipped["width"] = min(elem.get("width", 200), _TEXT_COL_MAX_CANVAS - elem.get("left", 0))
+                _render_element(draw, clipped)
+                continue
+
+            # Re-position text element at current_y, spanning the full left column width.
+            # Height = remaining vertical space so text never bleeds past the canvas bottom.
+            remaining_px = max(40, (OUT_H - 60) - current_y_px)
+            reflowed = dict(elem)
+            reflowed["left"]   = _LEFT_CANVAS_MARGIN
+            reflowed["top"]    = (current_y_px - HEADER_TOTAL_H) / SCALE
+            reflowed["width"]  = _LEFT_COL_W_CANVAS
+            reflowed["height"] = remaining_px / SCALE
+
+            _render_element(draw, reflowed)
+
+            # Advance current_y by the actual rendered text height (not the container height)
+            bounds = _measure_text_bounds(reflowed)
+            actual_bottom = bounds[3]
+            if actual_bottom <= current_y_px:
+                actual_bottom = current_y_px + int(18 * SCALE)  # minimum advancement
+
+            segs = _parse_html_to_segments(elem.get("content", ""), default_font_size=18.0)
+            max_fs = max((s.font_size for s in segs if s.text.strip()), default=18.0)
+            gap_px = int(max_fs * SCALE * 0.55) if max_fs >= 28 else int(max_fs * SCALE * 0.35)
+            current_y_px = actual_bottom + gap_px
+
+    # Napkin visual — fitted into right column
+    try:
+        napkin = _PIL.open(napkin_img_path).convert("RGBA")
+
+        right_w   = _RIGHT_COL_END_PX - _RIGHT_COL_START_PX        # ~925 px
+        right_top = HEADER_TOTAL_H + 40
+        right_h   = OUT_H - right_top - 40                          # ~980 px
+
+        nap_w, nap_h = napkin.size
+        scale   = min(right_w / nap_w, right_h / nap_h)  # upscale OR downscale to fill column
+        new_w   = int(nap_w * scale)
+        new_h   = int(nap_h * scale)
+        resized = napkin.resize((new_w, new_h), _PIL.LANCZOS)
+
+        paste_x = _RIGHT_COL_START_PX + (right_w - new_w) // 2
+        paste_y = right_top + (right_h - new_h) // 2
+
+        # White card background so transparent PNGs look clean
+        card_pad = 12
+        draw.rectangle(
+            [
+                (paste_x - card_pad, paste_y - card_pad),
+                (paste_x + new_w + card_pad, paste_y + new_h + card_pad),
+            ],
+            fill=(255, 255, 255),
+        )
+
+        if resized.mode == "RGBA":
+            img.paste(resized, (paste_x, paste_y), resized)
+        else:
+            img.paste(resized, (paste_x, paste_y))
+
+    except Exception as e:
+        logger.warning(f"Could not paste Napkin visual: {e}")
+        # Draw a placeholder so the right column is not just blank white
+        ph_x = _RIGHT_COL_START_PX + 20
+        ph_y = HEADER_TOTAL_H + 80
+        ph_w = _RIGHT_COL_END_PX - _RIGHT_COL_START_PX - 40
+        ph_h = OUT_H - ph_y - 80
+        draw.rectangle([(ph_x, ph_y), (ph_x + ph_w, ph_y + ph_h)], fill=PANEL_BG)
+        err_font = _load_font(18, role="body")
+        draw.text((ph_x + 20, ph_y + 20), "Visual unavailable", font=err_font, fill=TEXT_MUTED)
 
 
 def _render_element(draw, elem: dict):

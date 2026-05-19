@@ -70,7 +70,7 @@ def _make_logged_call_llm(client, model, max_tokens, run_logger):
     return call_llm
 
 
-def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num_scenes, lecture_eval, presenter_overlay, result_path, progress_path, log_path):
+def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num_scenes, lecture_eval, presenter_overlay, use_groot, result_path, progress_path, log_path):
     sys.path.insert(0, PROJECT_ROOT)
     os.chdir(PROJECT_ROOT)
     try:
@@ -79,7 +79,7 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num
         from modules.tts.elevenlabs import ElevenLabsTTS
         from modules.video_assembler.ffmpeg import FFmpegVideoAssembler
         from modules.storage.local import LocalStorage
-        from config.settings import CLAUDE_MODEL, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES
+        from config.settings import CLAUDE_MODEL, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES, NAPKIN_API_KEY
         import anthropic
         import utils.run_logger as run_logger
 
@@ -100,10 +100,11 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num
                 presenter_overlay = False
                 run_logger.log_step("Warning", "Avatar file not found — presenter overlay disabled")
 
-        _write_progress(progress_path, "Generating slides", "Groot is building slide content...")
-        run_logger.log_step("Generating slides", "Groot is building slide content...")
+        slide_engine = "Claude" if not use_groot else "Groot"
+        _write_progress(progress_path, "Generating slides", f"{slide_engine} is building slide content...")
+        run_logger.log_step("Generating slides", f"{slide_engine} is building slide content...")
         pipeline = DirectPipeline(
-            slide_generator=GrootSlideGenerator(cookies=GROOT_COOKIES),
+            slide_generator=GrootSlideGenerator(cookies=GROOT_COOKIES, napkin_api_key=NAPKIN_API_KEY, use_groot=use_groot),
             tts=ElevenLabsTTS(api_key=el_k, voice_id=el_v),
             video_assembler=FFmpegVideoAssembler(temp_dir=TEMP_DIR),
             storage=LocalStorage(base_path=session_dir),
@@ -115,7 +116,7 @@ def run_single_topic(topic, level, el_k, el_v, llm_key, scribble, animation, num
         # Patch pipeline to emit progress
         original_run = pipeline.run
         def patched_run(topic, level=None, scribble=False, animation=False, num_scenes=4, lecture_eval=False):
-            _write_progress(progress_path, "Generating slides", "Groot is building slide content...")
+            _write_progress(progress_path, "Generating slides", f"{slide_engine} is building slide content...")
             return original_run(topic, level=level, scribble=scribble, animation=animation, num_scenes=num_scenes, lecture_eval=lecture_eval)
         pipeline.run = patched_run
 
@@ -235,7 +236,7 @@ def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key
         from modules.video_assembler.ffmpeg import FFmpegVideoAssembler
         from modules.storage.local import LocalStorage
         from modules.personalization.claude import ClaudePersonalization
-        from config.settings import CLAUDE_MODEL, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES
+        from config.settings import CLAUDE_MODEL, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES, NAPKIN_API_KEY
         import anthropic
         import utils.run_logger as run_logger
 
@@ -266,7 +267,7 @@ def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key
 
         pipeline = DynamicPrimerPipeline(
             personalization=ClaudePersonalization(),
-            slide_generator=GrootSlideGenerator(cookies=GROOT_COOKIES),
+            slide_generator=GrootSlideGenerator(cookies=GROOT_COOKIES, napkin_api_key=NAPKIN_API_KEY),
             tts=ElevenLabsTTS(api_key=el_k, voice_id=el_v),
             video_assembler=FFmpegVideoAssembler(temp_dir=TEMP_DIR),
             storage=LocalStorage(base_path=session_dir),
@@ -292,6 +293,67 @@ def run_personalized_primer(course, level, topics, qa_pairs, el_k, el_v, llm_key
         try:
             import utils.run_logger as run_logger
             run_logger.log_error(str(e), context="run_personalized_primer")
+        except Exception:
+            pass
+        with open(result_path, "w") as f:
+            json.dump({"status": "error", "error": str(e)}, f)
+
+
+def run_slide_by_slide(slides_data, el_k, el_v, llm_key, scribble, presenter_overlay, result_path, progress_path, log_path):
+    sys.path.insert(0, PROJECT_ROOT)
+    os.chdir(PROJECT_ROOT)
+    try:
+        from pipelines.slide_by_slide import SlideBySlide
+        from modules.groot.generator import GrootSlideGenerator
+        from modules.tts.elevenlabs import ElevenLabsTTS
+        from modules.video_assembler.ffmpeg import FFmpegVideoAssembler
+        from modules.storage.local import LocalStorage
+        from config.settings import CLAUDE_MODEL, TEMP_DIR, OUTPUT_DIR, NAPKIN_API_KEY
+        import anthropic
+        import utils.run_logger as run_logger
+
+        run_logger.initialize(log_path)
+        total = len(slides_data)
+        _write_progress(progress_path, "Starting", f"Setting up {total}-slide pipeline...")
+        run_logger.log_step("Starting", f"Slide-by-Slide: {total} slides")
+
+        client = anthropic.Anthropic(api_key=llm_key)
+        call_llm = _make_logged_call_llm(client, CLAUDE_MODEL, 2048, run_logger)
+
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        session_dir = _make_session_dir(OUTPUT_DIR, "sbs")
+
+        if presenter_overlay:
+            avatar_file = os.path.join(PROJECT_ROOT, "assets", "shivank_avatar.png")
+            if not os.path.exists(avatar_file):
+                presenter_overlay = False
+                run_logger.log_step("Warning", "Avatar file not found — presenter overlay disabled")
+
+        pipeline = SlideBySlide(
+            slide_generator=GrootSlideGenerator(cookies="", napkin_api_key=NAPKIN_API_KEY, use_groot=False),
+            tts=ElevenLabsTTS(api_key=el_k, voice_id=el_v),
+            video_assembler=FFmpegVideoAssembler(temp_dir=TEMP_DIR),
+            storage=LocalStorage(base_path=session_dir),
+            temp_dir=TEMP_DIR, output_dir=OUTPUT_DIR,
+            call_llm=call_llm,
+            presenter_overlay=presenter_overlay,
+        )
+
+        def on_progress(idx, total, title):
+            _write_progress(progress_path, f"Slide {idx + 1}/{total}", f"Generating '{title}'...")
+            run_logger.log_step(f"Slide {idx + 1}/{total}", f"Formatting and rendering '{title}'")
+
+        video_path = pipeline.run(slides_data, scribble=scribble, on_progress=on_progress)
+        _write_progress(progress_path, "Done", "Video ready!")
+        run_logger.log_step("Done", "Slide-by-Slide video ready!")
+        with open(result_path, "w") as f:
+            json.dump({"status": "ok", "path": video_path}, f)
+    except Exception as e:
+        _write_progress(progress_path, "Error", str(e))
+        try:
+            import utils.run_logger as run_logger
+            run_logger.log_error(str(e), context="run_slide_by_slide")
         except Exception:
             pass
         with open(result_path, "w") as f:

@@ -246,6 +246,13 @@ def _render_log_section(events: list, title: str = "Generation Log"):
                 audio_kb = e.get("audio_kb", 0)
                 msg = f"TTS &nbsp;·&nbsp; {dur_str} &nbsp;·&nbsp; {chars} chars → {audio_kb} KB audio"
 
+            elif api == "napkin":
+                badge_color = "#EF4444" if status == "error" else "#8B5CF6"
+                badge = "NAPKIN"
+                input_s = (e.get("input_summary") or "").replace("<", "&lt;")
+                out_s = (e.get("output_summary") or "").replace("<", "&lt;")
+                msg = f"{dur_str} &nbsp;·&nbsp; {input_s} → {out_s}"
+
             else:
                 badge_color = "#94A3B8"
                 badge = api.upper()
@@ -259,15 +266,20 @@ def _render_log_section(events: list, title: str = "Generation Log"):
                 attempt = e.get("attempt", 1)
                 badge_color = "#22C55E" if flagged == 0 else "#EAB308"
                 badge = "EVAL"
-                flagged_info = ""
+                details = e.get("slide_details", [])
+                flagged_lines = ""
                 if flagged > 0:
-                    details = e.get("slide_details", [])
-                    parts = [
-                        f"slide {d['slide']} (rel={d.get('relevance')}, qual={d.get('quality')})"
-                        for d in details if d.get("needs_regen")
-                    ]
-                    flagged_info = f" &nbsp;·&nbsp; [{', '.join(parts[:3])}]"
-                msg = f"slide eval attempt {attempt} &nbsp;·&nbsp; {total} slides &nbsp;·&nbsp; {flagged} flagged{flagged_info}"
+                    for d in details:
+                        if d.get("needs_regen"):
+                            reason = (d.get("reason") or "").replace("<", "&lt;")
+                            flagged_lines += (
+                                f'<br><span style="color:#94A3B8;font-size:10px;padding-left:4px">'
+                                f'slide {d["slide"]} &nbsp;rel={d.get("relevance")} qual={d.get("quality")}'
+                                + (f' &nbsp;·&nbsp; <i>{reason}</i>' if reason else "")
+                                + '</span>'
+                            )
+                msg = (f"slide eval attempt {attempt} &nbsp;·&nbsp; {total} slides &nbsp;·&nbsp; {flagged} flagged"
+                       + flagged_lines)
 
             elif eval_type == "lecture":
                 passed = e.get("passed", False)
@@ -275,13 +287,20 @@ def _render_log_section(events: list, title: str = "Generation Log"):
                 cov = e.get("coverage", "?")
                 flow = e.get("flow", "?")
                 app = e.get("appropriateness", "?")
-                verdict = (e.get("verdict") or "")[:120].replace("<", "&lt;")
+                verdict = (e.get("verdict") or "").replace("<", "&lt;")
+                missing = e.get("missing_concepts", [])
                 badge_color = "#22C55E" if passed else "#EF4444"
                 badge = "EVAL"
                 status_str = "✓ PASS" if passed else "✗ FAIL"
+                missing_line = ""
+                if missing:
+                    missing_str = ", ".join(str(m) for m in missing)
+                    missing_line = (f'<br><span style="color:#94A3B8;font-size:10px;padding-left:4px">'
+                                    f'Missing concepts: <i>{missing_str}</i></span>')
                 msg = (f"lecture eval &nbsp;·&nbsp; {status_str} &nbsp;·&nbsp; "
                        f"overall {overall} (cov={cov} flow={flow} app={app})"
-                       + (f' &nbsp;·&nbsp; <i>"{verdict}"</i>' if verdict else ""))
+                       + (f'<br><span style="color:#94A3B8;font-size:10px;padding-left:4px"><i>"{verdict}"</i></span>' if verdict else "")
+                       + missing_line)
             else:
                 badge_color = "#94A3B8"
                 badge = "EVAL"
@@ -295,9 +314,9 @@ def _render_log_section(events: list, title: str = "Generation Log"):
             original = (e.get("original") or "").replace("<", "&lt;")
             improved = (e.get("improved") or "").replace("<", "&lt;")
             msg = (
-                f"slide {slide_n} &nbsp;·&nbsp; <span style='color:#94A3B8'>{reason[:80]}</span>"
-                + (f'<br><span style="color:#64748B;font-size:10px;padding-left:4px">WAS: <i>"{original[:250]}{"…" if len(original) > 250 else ""}"</i></span>' if original else "")
-                + (f'<br><span style="color:#86EFAC;font-size:10px;padding-left:4px">NOW: <i>"{improved[:250]}{"…" if len(improved) > 250 else ""}"</i></span>' if improved else "")
+                f"slide {slide_n} &nbsp;·&nbsp; <span style='color:#94A3B8'>{reason}</span>"
+                + (f'<br><span style="color:#64748B;font-size:10px;padding-left:4px">WAS: <i>"{original}"</i></span>' if original else "")
+                + (f'<br><span style="color:#86EFAC;font-size:10px;padding-left:4px">NOW: <i>"{improved}"</i></span>' if improved else "")
             )
 
         elif etype == "error":
@@ -426,11 +445,13 @@ _TYPE_LABELS = {
     "single": "Single Topic",
     "primer": "Personalized Primer",
     "document": "Case Study Document",
+    "slide_by_slide": "Slide by Slide",
 }
 _TYPE_COLORS = {
     "single": ("#E9F1FF", "#0055FF"),
     "primer": ("#011845", "#FFFFFF"),
     "document": ("#E6F7EE", "#1A7A3C"),
+    "slide_by_slide": ("#FFF4E5", "#B45309"),
 }
 
 
@@ -577,6 +598,12 @@ if "gen_lecture_eval" not in st.session_state:
     st.session_state.gen_lecture_eval = False
 if "gen_presenter_overlay" not in st.session_state:
     st.session_state.gen_presenter_overlay = False
+if "gen_use_groot" not in st.session_state:
+    st.session_state.gen_use_groot = True
+if "sbs_num_slides" not in st.session_state:
+    st.session_state.sbs_num_slides = 3
+if "sbs_slides" not in st.session_state:
+    st.session_state.sbs_slides = [{"title": "", "content": "", "use_napkin": False} for _ in range(3)]
 if "gen_process" not in st.session_state:
     st.session_state.gen_process = None
 if "gen_result_path" not in st.session_state:
@@ -1304,13 +1331,11 @@ elif page == "generate":
     # Streamlit renders button keys into the DOM via aria labels we can use
     st.markdown(f"""
     <style>
-    /* Mode selector row: all 3 buttons inherit base tab style */
+    /* Mode selector row: all 4 buttons inherit base tab style */
     [data-testid="stBaseButton-secondary"][aria-label="Single Topic"],
     [data-testid="stBaseButton-secondary"][aria-label="Personalized Primer"],
     [data-testid="stBaseButton-secondary"][aria-label="Case Study Document"],
-    button[kind="secondary"]:is([aria-label="Single Topic"],
-                               [aria-label="Personalized Primer"],
-                               [aria-label="Case Study Document"]) {{
+    [data-testid="stBaseButton-secondary"][aria-label="Slide by Slide"] {{
         border-radius: 0 !important;
         font-size: 12px !important;
         font-weight: 600 !important;
@@ -1325,8 +1350,7 @@ elif page == "generate":
         transition: all 0.15s !important;
     }}
     /* Active mode button */
-    [data-testid="stBaseButton-secondary"][aria-label="{gen_mode}"],
-    button[kind="secondary"][aria-label="{gen_mode}"] {{
+    [data-testid="stBaseButton-secondary"][aria-label="{gen_mode}"] {{
         background: var(--blue) !important;
         color: white !important;
         border-color: var(--blue) !important;
@@ -1334,7 +1358,8 @@ elif page == "generate":
     /* Hover on inactive */
     [data-testid="stBaseButton-secondary"][aria-label="Single Topic"]:not([aria-label="{gen_mode}"]):hover,
     [data-testid="stBaseButton-secondary"][aria-label="Personalized Primer"]:not([aria-label="{gen_mode}"]):hover,
-    [data-testid="stBaseButton-secondary"][aria-label="Case Study Document"]:not([aria-label="{gen_mode}"]):hover {{
+    [data-testid="stBaseButton-secondary"][aria-label="Case Study Document"]:not([aria-label="{gen_mode}"]):hover,
+    [data-testid="stBaseButton-secondary"][aria-label="Slide by Slide"]:not([aria-label="{gen_mode}"]):hover {{
         background: var(--ice) !important;
         color: var(--blue) !important;
         border-color: var(--blue) !important;
@@ -1342,7 +1367,7 @@ elif page == "generate":
     </style>
     """, unsafe_allow_html=True)
 
-    mc1, mc2, mc3 = st.columns(3)
+    mc1, mc2, mc3, mc4 = st.columns(4)
     with mc1:
         if st.button("Single Topic", use_container_width=True, key="mode_single"):
             st.session_state.gen_mode = "Single Topic"
@@ -1354,6 +1379,10 @@ elif page == "generate":
     with mc3:
         if st.button("Case Study Document", use_container_width=True, key="mode_doc"):
             st.session_state.gen_mode = "Case Study Document"
+            st.rerun()
+    with mc4:
+        if st.button("Slide by Slide", use_container_width=True, key="mode_sbs"):
+            st.session_state.gen_mode = "Slide by Slide"
             st.rerun()
 
     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
@@ -1427,6 +1456,16 @@ elif page == "generate":
             presenter_overlay = presenter_overlay and is_shivank
             st.session_state.gen_presenter_overlay = presenter_overlay
 
+        eng1, eng2 = st.columns([1, 3])
+        with eng1:
+            use_groot = st.toggle(
+                "Use Groot",
+                value=st.session_state.gen_use_groot,
+                key="tog_use_groot_single",
+                help="ON: Groot AI generates richer slide layouts (may have occasional coordinate issues).\nOFF: Claude generates clean, reliable slides directly — faster and more predictable.",
+            )
+            st.session_state.gen_use_groot = use_groot
+
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         num_scenes = st.slider("Max Slides", min_value=2, max_value=40, value=4, step=1, key="slider_scenes_single")
 
@@ -1443,7 +1482,7 @@ elif page == "generate":
                     from dashboard.pipeline_worker import run_single_topic
                     el_k, _ = _get_el_creds()
                     selected_voice_id = VOICE_MAP[instructor_voice]
-                    _start_process(run_single_topic, (topic, level, el_k, selected_voice_id, _get_llm_key(), scribble, animation, num_scenes, lecture_eval, presenter_overlay))
+                    _start_process(run_single_topic, (topic, level, el_k, selected_voice_id, _get_llm_key(), scribble, animation, num_scenes, lecture_eval, presenter_overlay, use_groot))
                     st.rerun()
 
     # ── Personalized Primer ───────────────────────────────────────────────────
@@ -1710,8 +1749,143 @@ elif page == "generate":
                                         pp_scribble, pp_animation, max_videos, pp_lecture_eval, pp_presenter_overlay))
                         st.rerun()
 
+    # ── Slide by Slide ────────────────────────────────────────────────────────
+    elif gen_mode == "Slide by Slide":
+        st.markdown("""
+        <div class="s-section-head">
+            <div class="s-form-title">Slide by Slide</div>
+            <div class="s-form-desc">Write each slide yourself — title, content, and whether you want a Napkin diagram. Claude only formats your content into a clean layout.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        sbs_topic = st.text_input("Video Title", placeholder="e.g. Introduction to Neural Networks", key="sbs_topic")
+
+        st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
+
+        st.markdown("""
+        <div style="background:#FEF3C7;border-left:4px solid #D97706;border-radius:8px;padding:16px 20px;margin-bottom:18px;">
+            <div style="font-weight:700;color:#92400E;font-size:15px;margin-bottom:10px;">⚠️ Avoid doing this in your content or title</div>
+            <div style="color:#78350F;font-size:14px;line-height:1.7;">
+                <b>Mathematical formulas</b> — e.g. <code>Q(s,a) ← Q(s,a) + α[r + γ max Q(s′,a′)]</code><br>
+                The voice cannot read symbols like <code>←  α  γ  ∑  ∫  ′  ₀</code> correctly. Any formula found in the content or title will be <b>silently removed from the audio</b> — the surrounding text will still be read, but the formula itself will be skipped entirely.
+                <br><br>
+                <b>Title:</b> The title appears on the slide visually, so a formula in the title will display correctly on screen. But if you leave the content box empty, the title is also read aloud — so avoid formulas in titles unless you fill in the content.<br><br>
+                <b>✅ Instead, do this:</b><br>
+                • In the <b>title</b>, use a plain readable name: <i>"The Q-Learning Update Rule"</i><br>
+                • In the <b>content</b>, explain it in plain words: <i>"The Q-value is updated by adding the learning rate times the difference between the expected and actual reward."</i><br>
+                • Enable the <b>Napkin diagram toggle</b> — Claude will generate a diagram that visually represents the concept, so you get the visual without needing the formula in the audio
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Number of slides selector — adjusts the slides list in session state
+        num_slides = st.slider("Number of Slides", min_value=1, max_value=10,
+                               value=st.session_state.sbs_num_slides, step=1, key="sbs_num_slider")
+        if num_slides != st.session_state.sbs_num_slides:
+            current = st.session_state.sbs_slides
+            if num_slides > len(current):
+                current += [{"title": "", "content": "", "use_napkin": False}
+                             for _ in range(num_slides - len(current))]
+            else:
+                current = current[:num_slides]
+            st.session_state.sbs_slides = current
+            st.session_state.sbs_num_slides = num_slides
+            st.rerun()
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+        # Per-slide editors
+        slides_state = st.session_state.sbs_slides
+        for idx in range(num_slides):
+            with st.expander(f"Slide {idx + 1}  —  {slides_state[idx]['title'] or '(untitled)'}", expanded=(idx == 0)):
+                s_title = st.text_input(
+                    "Title", value=slides_state[idx]["title"],
+                    placeholder=f"Slide {idx + 1} title — use plain words, avoid formulas or symbols",
+                    key=f"sbs_title_{idx}",
+                )
+                s_content = st.text_area(
+                    "Content",
+                    value=slides_state[idx]["content"],
+                    height=160,
+                    max_chars=2000,
+                    placeholder="Write the slide content in plain English. This becomes both the slide bullets and the spoken audio — avoid formulas and symbols, explain concepts in words instead.",
+                    key=f"sbs_content_{idx}",
+                )
+                s_napkin = st.toggle(
+                    "Generate Napkin diagram for this slide",
+                    value=slides_state[idx]["use_napkin"],
+                    key=f"sbs_napkin_{idx}",
+                    help="Uses ~60-90 Napkin credits. The diagram appears in the right column; text stays in the left column — no overlaps.",
+                )
+                # Persist edits back to session state
+                slides_state[idx] = {"title": s_title, "content": s_content, "use_napkin": s_napkin}
+        st.session_state.sbs_slides = slides_state
+
+        st.markdown('<div class="s-divider"></div>', unsafe_allow_html=True)
+
+        # Check if process just finished
+        proc = st.session_state.get("gen_process")
+        if proc and not proc.is_alive():
+            result_data = _read_result()
+            st.session_state.gen_process = None
+            if result_data and result_data.get("status") == "ok":
+                video_path = result_data["path"]
+                if video_path and os.path.exists(video_path):
+                    _append_gen_result({
+                        "type": "slide_by_slide", "topic": sbs_topic or "Slide by Slide",
+                        "videos": [{"path": video_path, "topic": sbs_topic or "Slide by Slide", "section": "Slide by Slide"}],
+                    })
+                    st.rerun()
+            elif result_data:
+                st.error(f"Generation failed: {result_data.get('error', 'Unknown error')}")
+
+        # Video options
+        st.markdown("""
+        <div class="s-video-options">
+            <div class="s-video-options-label">Video Options</div>
+        </div>
+        """, unsafe_allow_html=True)
+        instructor_voice_sbs = st.selectbox("Instructor Voice", options=["Shivank Sir", "Anshuman Sir"], key="voice_sbs")
+        is_shivank_sbs = (instructor_voice_sbs == "Shivank Sir")
+
+        sbsc1, sbsc2 = st.columns(2)
+        with sbsc1:
+            sbs_scribble = st.toggle("Pen Annotations", value=st.session_state.gen_scribble, key="tog_scribble_sbs")
+            st.session_state.gen_scribble = sbs_scribble
+        with sbsc2:
+            sbs_presenter = st.toggle(
+                "Presenter Avatar",
+                value=st.session_state.gen_presenter_overlay and is_shivank_sbs,
+                key="tog_avatar_sbs",
+                disabled=not is_shivank_sbs,
+                help="Add Shivank Sir's avatar. Only available with Shivank Sir's voice.",
+            )
+            sbs_presenter = sbs_presenter and is_shivank_sbs
+            st.session_state.gen_presenter_overlay = sbs_presenter
+
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+        if _show_generation_status(f'"{sbs_topic}" — Slide by Slide'):
+            pass
+        else:
+            if st.button("Generate Slide-by-Slide Video →", type="primary", key="gen_sbs"):
+                if not sbs_topic.strip():
+                    st.error("Please enter a video title.")
+                elif not any(s["content"].strip() for s in slides_state):
+                    st.error("Please add content to at least one slide.")
+                elif not _get_llm_key():
+                    st.error("Claude API key required. Set ANTHROPIC_API_KEY in .env")
+                else:
+                    from dashboard.pipeline_worker import run_slide_by_slide
+                    el_k, _ = _get_el_creds()
+                    selected_voice_id = VOICE_MAP[instructor_voice_sbs]
+                    _start_process(run_slide_by_slide,
+                                   (list(slides_state), el_k, selected_voice_id,
+                                    _get_llm_key(), sbs_scribble, sbs_presenter))
+                    st.rerun()
+
     # ── Document Video (Generic) ───────────────────────────────────────────────
-    else:
+    elif gen_mode == "Case Study Document":
         st.markdown("""
         <div class="s-section-head">
             <div class="s-form-title">Document Video</div>

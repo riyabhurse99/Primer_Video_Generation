@@ -39,6 +39,10 @@ OPENMAIC_API_KEY = _get("OPENMAIC_API_KEY")
 # ─── GROOT (reverse-engineered API) ────────────────
 GROOT_COOKIES = _get("GROOT_COOKIES")
 
+# ─── NAPKIN (visual diagram generator) ─────────────
+# Get from app.napkin.ai → Account Settings → Developers tab
+NAPKIN_API_KEY = _get("NAPKIN_API_KEY")
+
 # ─── TTS BACKEND ───────────────────────────────────
 # "gtts"       → free Google TTS (no key needed)
 # "elevenlabs" → ElevenLabs (needs ELEVENLABS_API_KEY)

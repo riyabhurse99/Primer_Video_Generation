@@ -88,7 +88,7 @@ class DynamicPrimerPipeline:
         pair_count = min(len(content_images), len(script_narrations))
         if pair_count == 0:
             logger.warning("No image/narration pairs — skipping video assembly")
-            return None
+            return None, 0
 
         # Eval + improve narrations before TTS (skipped when no LLM configured)
         if self.call_llm and pair_count > 0:
@@ -129,41 +129,49 @@ class DynamicPrimerPipeline:
 
         # Step 5: Save to storage
         stored_path = self.storage.save(final_video_path, f"{context}/{safe_topic}.mp4")
-        return stored_path
+        return stored_path, pair_count
 
-    def run(self, input: QuestionnaireInput, student_id: str, scribble: bool = False, animation: bool = False, max_videos: int = None, lecture_eval: bool = False) -> PrimerOutput:
-        logger.info(f"=== Dynamic Primer Pipeline START — student={student_id}, course={input.course} max_videos={max_videos} ===")
+    def run(self, input: QuestionnaireInput, student_id: str, scribble: bool = False, animation: bool = False, max_videos: int = None, lecture_eval: bool = False, max_total_slides: int = 50) -> PrimerOutput:
+        logger.info(f"=== Dynamic Primer Pipeline START — student={student_id}, course={input.course} max_videos={max_videos} max_total_slides={max_total_slides} ===")
 
-        # Step 1: Generate personalized plan from questionnaire answers
-        plan = self.personalization.generate_dynamic_plan(input)
-        logger.info(f"Personalized plan ready — {len(plan.sections)} sections")
+        # Step 1: Generate personalized plan — Claude distributes slides within the budget upfront
+        plan = self.personalization.generate_dynamic_plan(input, max_total_slides=max_total_slides)
+        total_planned_slides = sum(len(v.slides) for s in plan.sections for v in s.videos)
+        logger.info(f"Personalized plan ready — {len(plan.sections)} sections, {total_planned_slides} slides planned across all videos")
 
         generated_videos = []
+        total_slides = 0
+        videos_generated = 0
 
         for section in plan.sections:
-            if max_videos is not None and len(generated_videos) >= max_videos:
-                break
-            logger.info(f"--- Section: {section.name} ({len(section.videos)} videos) ---")
             for video_script in section.videos:
-                if max_videos is not None and len(generated_videos) >= max_videos:
+                if max_videos is not None and videos_generated >= max_videos:
                     break
-                logger.info(f"  Generating video: {video_script.topic}")
+                planned_count = len(video_script.slides)
+                logger.info(f"  Generating video: {video_script.topic} ({planned_count} slides planned)")
                 try:
-                    context = section.name
-                    video_path = self._generate_single_video(video_script, context, scribble=scribble, lecture_eval=lecture_eval)
+                    video_path, slide_count = self._generate_single_video(
+                        video_script, section.name, scribble=scribble,
+                        lecture_eval=lecture_eval, max_scenes=planned_count,
+                    )
                     if video_path is None:
                         logger.warning(f"  Skipping {video_script.topic} — no video produced")
                         continue
+                    total_slides += slide_count
+                    videos_generated += 1
                     generated_videos.append(GeneratedVideo(
                         section=section.name,
                         topic=video_script.topic,
-                        video_path=video_path
+                        video_path=video_path,
                     ))
-                    logger.info(f"  Done: {video_script.topic}")
+                    logger.info(f"  Done: {video_script.topic} ({slide_count} slides, {total_slides} total so far)")
                 except Exception as e:
                     logger.error(f"  FAILED: {video_script.topic} — {e}")
+            if max_videos is not None and videos_generated >= max_videos:
+                break
 
-        logger.info(f"=== Dynamic Primer Pipeline COMPLETE — {len(generated_videos)} videos generated ===")
+        logger.info(f"=== Dynamic Primer Pipeline COMPLETE — {len(generated_videos)} videos, {total_slides} slides total ===")
+
 
         return PrimerOutput(
             course=input.course,

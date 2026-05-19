@@ -17,7 +17,7 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
-from config.settings import USE_MOCKS, STORAGE_BACKEND, LOCAL_STORAGE_PATH, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES, TTS_BACKEND
+from config.settings import USE_MOCKS, STORAGE_BACKEND, LOCAL_STORAGE_PATH, TEMP_DIR, OUTPUT_DIR, GROOT_COOKIES, TTS_BACKEND, NAPKIN_API_KEY
 
 # ─── Load modules based on USE_MOCKS flag ──────────────────────────────────────
 
@@ -34,7 +34,7 @@ def build_dependencies():
         from modules.personalization.claude import ClaudePersonalization
         from modules.groot.generator import GrootSlideGenerator
         personalization = ClaudePersonalization()
-        slide_generator = GrootSlideGenerator(cookies=GROOT_COOKIES)
+        slide_generator = GrootSlideGenerator(cookies=GROOT_COOKIES, napkin_api_key=NAPKIN_API_KEY)
 
         if TTS_BACKEND == "elevenlabs":
             from modules.tts.elevenlabs import ElevenLabsTTS

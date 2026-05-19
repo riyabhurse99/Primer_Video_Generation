@@ -19,10 +19,12 @@ class BasePersonalization(ABC):
         pass
 
     @abstractmethod
-    def generate_dynamic_plan(self, input: QuestionnaireInput) -> PrimerPlan:
+    def generate_dynamic_plan(self, input: QuestionnaireInput, max_total_slides: int = 50) -> PrimerPlan:
         """
         Reads student questionnaire answers + group level.
         Identifies gaps, decides personalized sections and videos.
+        max_total_slides: total slide budget across all videos — injected into the
+        planning prompt so Claude distributes slides intelligently from the start.
         Returns a full PrimerPlan.
         """
         pass

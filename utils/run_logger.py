@@ -74,9 +74,9 @@ def log_narration_improve(slide_num: int, original: str, improved: str, reason: 
     _write({
         "type": "narration_improve",
         "slide": slide_num,
-        "original": (original or "")[:600],
-        "improved": (improved or "")[:600],
-        "reason": (reason or "")[:200],
+        "original": original or "",
+        "improved": improved or "",
+        "reason": reason or "",
     })
 
 

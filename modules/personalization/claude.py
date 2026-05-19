@@ -180,8 +180,8 @@ Curriculum:
         )
         return self._parse_response(raw, input.course, input.group_level)
 
-    def generate_dynamic_plan(self, input: QuestionnaireInput) -> PrimerPlan:
-        logger.info(f"Generating dynamic plan — course={input.course}, level={input.group_level}")
+    def generate_dynamic_plan(self, input: QuestionnaireInput, max_total_slides: int = 50) -> PrimerPlan:
+        logger.info(f"Generating dynamic plan — course={input.course}, level={input.group_level}, max_total_slides={max_total_slides}")
         qna_text = "\n".join([f"Q: {q.question}\nA: {q.answer}" for q in input.questions_and_answers])
         user_message = f"""
 Course: {input.course}
@@ -191,6 +191,13 @@ Course Curriculum:
 
 Student Questionnaire Answers:
 {qna_text}
+
+SLIDE BUDGET CONSTRAINT (hard limit — do not exceed):
+You have exactly {max_total_slides} slides total across ALL videos in this plan.
+- Distribute slides based on topic complexity — harder topics get more slides, simpler ones fewer
+- Each video MUST have between 4 and 8 slides (never fewer than 4, never more than 8)
+- Plan fewer videos if needed to stay within budget — do not pad topics just to fill a quota
+- The sum of all slides across every video in your response MUST NOT exceed {max_total_slides}
 """
         t0 = time.perf_counter()
         response = self.client.messages.create(

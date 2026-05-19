@@ -14,6 +14,18 @@ Usage:
     evals = run_evals(topic, narrations, level="basic", call_llm=my_llm_fn)
     # call_llm is any function: (prompt: str) -> str
     # Returns None if call_llm is not provided (evals skipped).
+
+Summary: the full call sequence for a 5-slide video
+                                                                                                                                                                                                                
+  eval_and_improve() called
+    └── run_slide_evals()          → [eval:slide]  "5 slides · 0 LLM-flagged"                                                                                                                                   
+    └── _length_violations()       → [Length check] "5 slides flagged (too long)"                                                                                                                               
+    └── improve_narration() × 5    → [CLAUDE eval:improve] + [REWRITE WAS/NOW] × 5                                                                                                                              
+    └── run_slide_evals() again    → [eval:slide]  "5 slides · 0 flagged" ✓                                                                                                                                     
+    └── (if lecture eval on)                                                                                                                                                                                    
+        └── run_lecture_eval()     → [eval:lecture] pass/fail + scores                                                                                                                                          
+        └── (if failed) improve × N again                                                                                                                                                                       
+
 """
 
 import json
@@ -496,7 +508,7 @@ def run_slide_evals(
                             "relevance": s.get("relevance_score"),
                             "quality": s.get("quality_score"),
                             "needs_regen": s.get("needs_regeneration"),
-                            "reason": (s.get("reason") or "")[:100],
+                            "reason": s.get("reason") or "",
                         }
                         for s in slides
                     ],
@@ -538,7 +550,7 @@ def run_lecture_eval(
                 flow=parsed.get("flow_score"),
                 appropriateness=parsed.get("appropriateness_score"),
                 passed=parsed.get("pass", False),
-                verdict=(parsed.get("verdict") or "")[:200],
+                verdict=parsed.get("verdict") or "",
                 missing_concepts=parsed.get("missing_concepts", []),
             )
             return parsed
