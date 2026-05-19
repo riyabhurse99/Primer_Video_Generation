@@ -9,6 +9,8 @@ from PIL import ImageColor
 import sys
 import os
 import json
+import signal
+import subprocess
 import time as _time
 import multiprocessing
 
@@ -129,6 +131,52 @@ def _get_llm_key():
         return ANTHROPIC_API_KEY
 
 
+_PID_FILE = os.path.join(PROJECT_ROOT, "temp", "primer_running.pid")
+
+
+def _save_job_pid(pid: int):
+    """Persist the child process PID so it can be killed on the next session start."""
+    try:
+        os.makedirs(os.path.dirname(_PID_FILE), exist_ok=True)
+        with open(_PID_FILE, "w") as f:
+            f.write(str(pid))
+    except Exception:
+        pass
+
+
+def _clear_job_pid():
+    try:
+        if os.path.exists(_PID_FILE):
+            os.remove(_PID_FILE)
+    except Exception:
+        pass
+
+
+def _kill_orphaned_jobs():
+    """
+    Called once per new browser session (not on st.rerun).
+    Kills any leftover pipeline child process and all lingering ffmpeg processes
+    so a fresh session never competes for memory with a previous run.
+    """
+    # Kill tracked child process
+    try:
+        if os.path.exists(_PID_FILE):
+            with open(_PID_FILE) as f:
+                pid = int(f.read().strip())
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            _clear_job_pid()
+    except Exception:
+        pass
+    # Kill any lingering ffmpeg processes (safe: each app is isolated in its own container)
+    try:
+        subprocess.run(["pkill", "-f", "ffmpeg"], capture_output=True)
+    except Exception:
+        pass
+
+
 def _cancel_generation():
     """Kill the running generation process and clean up."""
     proc = st.session_state.get("gen_process")
@@ -137,6 +185,12 @@ def _cancel_generation():
         proc.join(timeout=3)
         if proc.is_alive():
             proc.kill()
+    _clear_job_pid()
+    # Also kill any ffmpeg that survived the child process termination
+    try:
+        subprocess.run(["pkill", "-f", "ffmpeg"], capture_output=True)
+    except Exception:
+        pass
     st.session_state.gen_process = None
     st.session_state.gen_result_path = None
     st.session_state.gen_progress_path = None
@@ -151,6 +205,7 @@ def _start_process(target, args):
     log_file = tempfile.mktemp(suffix=".jsonl")
     p = multiprocessing.Process(target=target, args=args + (result_file, progress_file, log_file), daemon=True)
     p.start()
+    _save_job_pid(p.pid)
     st.session_state.gen_process = p
     st.session_state.gen_result_path = result_file
     st.session_state.gen_progress_path = progress_file
@@ -612,6 +667,12 @@ if "gen_progress_path" not in st.session_state:
     st.session_state.gen_progress_path = None
 if "gen_log_path" not in st.session_state:
     st.session_state.gen_log_path = None
+
+# Kill any orphaned ffmpeg/pipeline processes from a previous session.
+# session_initialized is only absent on a fresh browser connection — not on st.rerun().
+if "session_initialized" not in st.session_state:
+    _kill_orphaned_jobs()
+    st.session_state.session_initialized = True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
